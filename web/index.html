@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 好友</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="who">
+        <div class="avatar" id="avatar">满</div>
+        <div>
+          <div class="name" id="friendName">小满</div>
+          <div class="sub" id="friendSub">连接中…</div>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="chat">聊天</button>
+        <button class="tab" data-tab="memory">记忆</button>
+        <button class="tab" data-tab="models">模型</button>
+        <button class="tab" data-tab="settings">设置</button>
+        <button class="tab" data-tab="status">状态</button>
+      </nav>
+    </header>
+
+    <!-- 聊天 -->
+    <section class="panel active" id="panel-chat">
+      <div class="banner" id="banner" hidden></div>
+      <div class="modelbar">
+        <label for="quickModel">聊天模型</label>
+        <select id="quickModel"></select>
+        <span class="muted" id="quickModelMsg"></span>
+      </div>
+      <div class="messages" id="messages"></div>
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" autocomplete="off"></textarea>
+        <button type="submit" id="sendBtn">发送</button>
+      </form>
+    </section>
+
+    <!-- 记忆 -->
+    <section class="panel" id="panel-memory">
+      <div class="scroll">
+        <p class="hint">这些是它从聊天里整理出来、关于你的记忆。每隔几句话会自动更新；你也可以手动改。网页和 QQ 私聊（主人）共用这一份。</p>
+
+        <div class="card">
+          <div class="card-head"><h3>基本信息</h3><span class="muted">同一项只保留最新的说法</span></div>
+          <ul class="kv" id="basics"></ul>
+          <form class="row" id="basicForm">
+            <input id="basicKey" placeholder="项目，如：生日" maxlength="10">
+            <input id="basicVal" placeholder="内容，如：5月20日" maxlength="60">
+            <button>添加</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>记得的事</h3><span class="muted" id="factCount"></span></div>
+          <ul class="list" id="facts"></ul>
+          <form class="row" id="factForm">
+            <input id="factText" placeholder="比如：不吃香菜" maxlength="80">
+            <button>添加</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>近期安排</h3><span class="muted">到时候它会记得问你</span></div>
+          <ul class="list" id="events"></ul>
+          <form class="row" id="eventForm">
+            <input id="eventDate" type="date">
+            <input id="eventText" placeholder="比如：去面试" maxlength="60">
+            <button>添加</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>更早聊天的摘要</h3><span class="muted" id="summaryInfo"></span></div>
+          <textarea id="summary" rows="6" placeholder="聊得多了以后，较早的聊天会被压缩成摘要放在这里"></textarea>
+          <div class="row end">
+            <button class="ghost" id="organizeBtn" type="button">现在整理一次记忆</button>
+            <button id="summarySave" type="button">保存摘要</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>它的表情包</h3><span class="muted" id="stickerCount"></span></div>
+          <p class="muted">它会从这里挑合适的发给你。你在 QQ 上发给它的表情包会自动收进来；不喜欢哪张点 × 删掉。</p>
+          <div class="sticker-grid" id="stickerGrid"></div>
+        </div>
+
+        <div class="card danger">
+          <div class="card-head"><h3>聊天记录</h3><span class="muted" id="historyInfo"></span></div>
+          <p class="muted">清空只会把记录文件改名备份（data/sessions/ 里的 .bak 文件），记忆档案不受影响。</p>
+          <div class="row end"><button class="warn" id="clearBtn" type="button">清空聊天记录</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 模型 -->
+    <section class="panel" id="panel-models">
+      <div class="scroll">
+        <p class="hint">可以添加好几家的模型，随时切换。也可以在 QQ 上给它发「/模型」查看、「/模型 2」切换。</p>
+
+        <div class="card">
+          <div class="card-head"><h3>已添加的模型</h3><span class="muted" id="modelCount"></span></div>
+          <ul class="models" id="modelList"></ul>
+          <div class="row end"><button type="button" id="addModelBtn">＋ 添加模型</button></div>
+        </div>
+
+        <div class="card" id="modelEditor" hidden>
+          <h3 id="editorTitle">添加模型</h3>
+          <label>服务商
+            <select id="mPreset"></select>
+          </label>
+          <p class="muted" id="mPresetNote"></p>
+          <label>接口地址<input id="mBaseUrl" placeholder="https://…/v1"></label>
+          <label>API Key <a class="muted" id="mKeyLink" target="_blank" rel="noopener">去哪拿 Key</a><input id="mKey" type="password" autocomplete="off"></label>
+          <label>模型名
+            <div class="row tight">
+              <input id="mModel" list="mModelList" placeholder="点右边按钮获取，或者手动填">
+              <button type="button" class="ghost" id="mFetch">获取模型列表</button>
+            </div>
+            <datalist id="mModelList"></datalist>
+          </label>
+          <p class="muted" id="mFetchMsg"></p>
+          <label>显示名称（可不填）<input id="mName" maxlength="40" placeholder="比如：Kimi 聊天"></label>
+          <div class="row end">
+            <span class="muted" id="mTestMsg"></span>
+            <button type="button" class="ghost" id="mTest">测试</button>
+            <button type="button" class="ghost" id="mCancel">取消</button>
+            <button type="button" id="mSave">保存</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>分工</h3>
+          <label>聊天用<select id="roleActive"></select></label>
+          <label>聊天模型出错时换成<select id="roleFallback"></select></label>
+          <label>整理记忆、压缩摘要用<select id="roleMemory"></select></label>
+          <p class="muted">整理记忆是在后台做的，可以用便宜一点的模型；空着就跟聊天用同一个。</p>
+          <label>看图用<select id="roleVision"></select></label>
+          <label>看图的模型名<input id="roleVisionModel" placeholder="空着 = 用这家推荐的看图模型"></label>
+          <label>活泼程度 <span class="muted" id="tempVal"></span><input id="roleTemp" type="range" min="0.3" max="1.2" step="0.05"></label>
+          <label>最长回复（token）<input id="roleMaxTokens" type="number" min="200" max="8000" step="100"></label>
+          <p class="muted">用会「先思考再回答」的推理模型时，把最长回复调到 2000 以上，不然可能想完了没字数说话。</p>
+          <div class="row end"><span class="muted" id="roleMsg"></span><button type="button" id="roleSave">保存分工</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="panel" id="panel-settings">
+      <form class="scroll" id="settingsForm">
+        <div class="card">
+          <h3>它是谁</h3>
+          <label>名字<input name="friend.name" maxlength="16"></label>
+          <label>性格
+            <select name="friend.style" id="styleSelect"></select>
+          </label>
+          <p class="muted" id="styleDesc"></p>
+          <label>说话语言
+            <select name="friend.language">
+              <option value="">跟着性格走（默认中文）</option>
+              <option value="zh">中文</option>
+              <option value="mix">中英夹杂</option>
+              <option value="en">英文</option>
+            </select>
+          </label>
+          <label>它怎么称呼你<input name="friend.userName" maxlength="16" placeholder="比如：小林（不填就叫“你”）"></label>
+          <label>你们的关系<input name="friend.relationship" maxlength="60" placeholder="比如：大学室友，认识八年"></label>
+          <label>补充设定<textarea name="friend.customPrompt" rows="4" maxlength="1500" placeholder="想让它更像某个人？写下口头禅、经历、说话习惯。比如：东北人，说话爱带“咋整”；喜欢猫；最近在学吉他。"></textarea></label>
+        </div>
+
+        <div class="card">
+          <h3>QQ</h3>
+          <label class="check"><input type="checkbox" name="qq.enabled">接入 QQ（需要 NapCat）</label>
+          <label>主人 QQ 号（你自己的大号，多个用逗号隔开）<input name="owner.qq" placeholder="123456789"></label>
+          <label class="check"><input type="checkbox" name="owner.onlyOwner">私聊只理主人</label>
+          <label class="check"><input type="checkbox" name="qq.group">在群里被 @ 时回复</label>
+          <label>只在这些群里回复（群号，逗号隔开，空 = 所有群）<input name="qq.groupAllowList"></label>
+          <label>连发合并等待（毫秒）<input name="qq.mergeWindowMs" type="number" min="0" max="15000" step="100"></label>
+          <label class="check"><input type="checkbox" name="qq.typingStatus">回复前在 QQ 上显示“对方正在输入…”</label>
+          <label class="check"><input type="checkbox" name="qq.pokeBack">被戳时有时戳回去</label>
+          <details>
+            <summary>NapCat 连接（一般不用改）</summary>
+            <label>NapCat HTTP 接口地址<input name="qq.apiBase" placeholder="http://127.0.0.1:3000"></label>
+            <label>Token（和 NapCat 里填的一致）<input name="qq.token" type="password" autocomplete="off" id="tokenInput"></label>
+            <label>上报签名校验
+              <select name="qq.inboundAuth">
+                <option value="auto">自动（带了就校验）</option>
+                <option value="required">必须（更安全）</option>
+                <option value="off">关闭</option>
+              </select>
+            </label>
+            <label>机器人 QQ 号（小号）<input name="qq.botQQ"></label>
+            <label>NapCat 启动脚本路径<input name="qq.napcatLauncher" placeholder="D:\napcat\launcher-user.bat"></label>
+          </details>
+        </div>
+
+        <div class="card">
+          <h3>看图、表情包、联网</h3>
+          <label class="check"><input type="checkbox" name="llm.visionEnabled">看懂你发的图片和表情包（用哪个模型看图，在「模型」页选）</label>
+          <label class="check"><input type="checkbox" name="stickers.enabled">让它发表情包</label>
+          <label class="check"><input type="checkbox" name="stickers.collect">把你发的表情包收进它的表情包库</label>
+          <label class="check"><input type="checkbox" name="search.enabled">需要实时信息时联网搜索（天气、新闻、比分……）</label>
+        </div>
+
+        <div class="card">
+          <h3>像真人</h3>
+          <label class="check"><input type="checkbox" name="humanize.typingDelay">回复前先停顿、按字数“打字”</label>
+          <label>最多分几条发<input name="humanize.maxBubbles" type="number" min="1" max="8"></label>
+          <label class="check"><input type="checkbox" name="proactive.enabled">偶尔主动找我聊天（QQ，白天，很久没聊时）</label>
+          <label>多久没聊才主动找（小时）<input name="proactive.quietHours" type="number" min="2" max="240"></label>
+        </div>
+
+        <div class="card">
+          <h3>掉线提醒</h3>
+          <label class="check"><input type="checkbox" name="notify.desktop">QQ 掉线时在电脑右下角弹提醒</label>
+          <label>手机推送 webhook（可不填）<input name="notify.webhook" type="password" autocomplete="off" id="webhookInput" placeholder="比如 Server酱 / PushPlus 给你的推送地址"></label>
+        </div>
+
+        <div class="savebar">
+          <span class="muted" id="saveMsg"></span>
+          <button type="submit">保存设置</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 状态 -->
+    <section class="panel" id="panel-status">
+      <div class="scroll">
+        <div class="card">
+          <h3>运行状态</h3>
+          <dl class="stat" id="statusList"></dl>
+          <div class="row end">
+            <button class="ghost" type="button" id="testQq">检查 QQ</button>
+            <button class="ghost" type="button" id="refreshStatus">刷新</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>怎么接入 QQ</h3>
+          <ol class="guide">
+            <li>准备一个 QQ <b>小号</b>当机器人（第三方协议有风控风险，别用大号）。</li>
+            <li>启动 NapCat 并扫码登录小号，打开它的 WebUI（通常是 <code>http://127.0.0.1:6099/webui</code>）。</li>
+            <li>在「网络配置」里新建 <b>HTTP 服务器</b>：端口 <code>3000</code>。</li>
+            <li>再新建 <b>HTTP 客户端（上报）</b>：地址 <code id="onebotUrl">http://127.0.0.1:8787/onebot</code>，消息格式选 <b>array</b>。</li>
+            <li>两处的 Token 可以留空；要填就填同一个，并在本页「设置 → QQ → NapCat 连接」里填上。</li>
+            <li>在「设置」里填上你的主人 QQ 号，保存。用大号私聊小号试试。</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

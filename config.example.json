@@ -1,0 +1,82 @@
+{
+  "port": 8787,
+  "friend": {
+    "name": "小满",
+    "style": "gentle",
+    "customPrompt": "",
+    "userName": "",
+    "relationship": "认识挺久、无话不谈的好朋友",
+    "language": ""
+  },
+  "providers": [],
+  "llm": {
+    "active": "",
+    "fallback": "",
+    "memoryProvider": "",
+    "visionProvider": "",
+    "visionModel": "",
+    "visionEnabled": true,
+    "temperature": 0.85,
+    "maxTokens": 1000,
+    "timeoutMs": 45000
+  },
+  "stickers": {
+    "enabled": true,
+    "collect": true,
+    "importFrom": ""
+  },
+  "search": {
+    "enabled": true,
+    "sources": [
+      "weather",
+      "wiki",
+      "bing",
+      "sogou"
+    ],
+    "timeoutMs": 8000
+  },
+  "chat": {
+    "historyMessages": 60,
+    "historyChars": 14000,
+    "summaryTrigger": 50,
+    "keepRecent": 24,
+    "relevantSnippets": 4,
+    "extractEvery": 4
+  },
+  "humanize": {
+    "enabled": true,
+    "typingDelay": true,
+    "maxBubbles": 4,
+    "maxReplyDelayMs": 6000
+  },
+  "qq": {
+    "enabled": true,
+    "apiBase": "http://127.0.0.1:3000",
+    "token": "",
+    "inboundAuth": "auto",
+    "selfId": 0,
+    "private": true,
+    "group": true,
+    "groupAtOnly": true,
+    "groupAllowList": [],
+    "mergeWindowMs": 2500,
+    "typingStatus": true,
+    "pokeBack": true,
+    "napcatLauncher": "",
+    "botQQ": ""
+  },
+  "owner": {
+    "qq": [],
+    "onlyOwner": true
+  },
+  "proactive": {
+    "enabled": false,
+    "quietHours": 20,
+    "from": 10,
+    "to": 22
+  },
+  "notify": {
+    "desktop": true,
+    "webhook": ""
+  }
+}

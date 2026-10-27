@@ -1,0 +1,3 @@
+# Windows 脚本是 GBK 编码 + CRLF，原样保存，别做换行转换
+*.bat -text
+*.vbs -text
