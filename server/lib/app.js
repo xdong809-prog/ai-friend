@@ -13,7 +13,7 @@ const { FACE_NAMES_FOR_PROMPT } = require("./qqfaces");
 const { PRESETS, presetOf } = require("./presets");
 const { friendlyError } = require("./llm");
 
-const VERSION = "4.3.0";
+const VERSION = "4.4.0";
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -26,7 +26,7 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
-function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, now = Date.now }) {
+function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, now = Date.now }) {
   const webDir = path.join(root, "web");
   let server;
   const guard = createLocalGuard({
@@ -178,6 +178,20 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       return { ok: true };
     },
     "GET /api/memory": async () => ({ ok: true, profile: memory.getProfile("main") }),
+    // 压缩：用户自己点了才做。POST 开始（马上返回），GET 查进度和前后对比
+    "GET /api/compress": async () => ({ ok: true, ...compressJob.status("main") }),
+    "POST /api/compress": async (req) => {
+      const b = await readJsonBody(req);
+      if (!llm.enabled("memory")) return { status: 400, body: { ok: false, error: "还没有可用的大模型，压缩要靠大模型写摘要。先去「模型」页添加一个" } };
+      const keepRecent = Math.max(4, Math.min(40, Number(b.keepRecent) || 10));
+      const { already } = compressJob.start("main", { keepRecent, tidy: b.tidy !== false, archive: b.archive !== false });
+      return { ok: true, already, ...compressJob.status("main") };
+    },
+    "POST /api/compress/restore": async () => {
+      if (compressJob.status("main").running) return { status: 409, body: { ok: false, error: "正在压缩，等它做完再恢复" } };
+      const n = memory.restoreArchives("main");
+      return { ok: true, restored: n, ...compressJob.status("main") };
+    },
     "POST /api/memory": async (req) => {
       const b = await readJsonBody(req);
       const id = "main";

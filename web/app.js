@@ -236,6 +236,7 @@
       const h = await api("GET", "/api/history?limit=1");
       $("#historyInfo").textContent = "共 " + h.total + " 条";
       loadStickers();
+      loadCompress();
     } catch (e) {
       alert(e.message);
     }
@@ -310,6 +311,84 @@
       b.textContent = "现在整理一次记忆";
     }, 2500);
   });
+  // ---------- 压缩聊天记录 ----------
+  function kb(n) {
+    return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB";
+  }
+  function renderCompress(r) {
+    const s = r.stats || {};
+    const box = $("#compressStats");
+    box.innerHTML = "";
+    const cell = (v, label) => {
+      const d = el("div");
+      d.append(el("b", "", v), el("span", "", label));
+      box.appendChild(d);
+    };
+    cell((s.contextChars || 0) + " 字", "每轮发给模型的内容");
+    cell((s.messages || 0) + " 条", "聊天原文（" + (s.unsummarized || 0) + " 条还没压缩）");
+    cell(kb(s.fileBytes || 0), "聊天记录文件");
+    cell((s.basics || 0) + (s.facts || 0) + " 项", "长期记忆");
+    $("#restoreBtn").hidden = !s.archives || r.running;
+    if (s.archives) $("#restoreBtn").textContent = "恢复归档的原文（" + s.archives + " 个，" + kb(s.archiveBytes) + "）";
+    const btn = $("#compressBtn");
+    const msg = $("#compressMsg");
+    if (r.running) {
+      btn.disabled = true;
+      btn.textContent = "压缩中…";
+      msg.textContent = "正在" + (r.progress || "压缩") + "……可以先去聊天，好了这里会显示结果";
+    } else {
+      btn.disabled = false;
+      btn.textContent = "压缩";
+      if (r.error) msg.textContent = "上次压缩没成功：" + r.error + "（聊天记录没有被改动）";
+      else if (r.resultText) msg.textContent = "压缩好了 ✓\n" + r.resultText;
+      else msg.textContent = s.unsummarized > 30 ? "现在有 " + s.unsummarized + " 条原文没压缩，压一下能省不少。" : "";
+    }
+  }
+  let compressTimer = null;
+  async function loadCompress() {
+    clearTimeout(compressTimer);
+    try {
+      const r = await api("GET", "/api/compress");
+      renderCompress(r);
+      if (r.running) compressTimer = setTimeout(loadCompress, 1500);
+      else if (r.finishedAt && Date.now() - r.finishedAt < 5000) {
+        const m = await api("GET", "/api/memory");
+        renderMemory(m.profile);
+      }
+    } catch (e) {
+      $("#compressMsg").textContent = "读取失败：" + e.message;
+    }
+  }
+  $("#compressBtn").addEventListener("click", async () => {
+    const archive = $("#cmpArchive").checked;
+    const ok = confirm(
+      "开始压缩聊天记录？\n\n· 先把聊过的内容整理进长期记忆，再把旧原文压成摘要\n· 最近 " +
+        ($("#cmpKeep").value || 10) + " 条原文保留不动\n" +
+        (archive ? "· 旧原文会打包归档（可以随时恢复）\n" : "") +
+        "· 记忆档案会先自动备份\n\n要用大模型跑一会儿，大概几十秒到一两分钟。"
+    );
+    if (!ok) return;
+    try {
+      const r = await api("POST", "/api/compress", { tidy: $("#cmpTidy").checked, archive, keepRecent: Number($("#cmpKeep").value) || 10 });
+      renderCompress(r);
+      compressTimer = setTimeout(loadCompress, 1000);
+    } catch (e) {
+      $("#compressMsg").textContent = e.message;
+    }
+  });
+  $("#restoreBtn").addEventListener("click", async () => {
+    if (!confirm("把归档的旧原文放回聊天记录吗？（摘要和记忆不变）")) return;
+    try {
+      const r = await api("POST", "/api/compress/restore");
+      renderCompress(r);
+      $("#compressMsg").textContent = "已经恢复了 " + r.restored + " 个归档";
+      const h = await api("GET", "/api/history?limit=1");
+      $("#historyInfo").textContent = "共 " + h.total + " 条";
+    } catch (e) {
+      $("#compressMsg").textContent = e.message;
+    }
+  });
+
   $("#clearBtn").addEventListener("click", async () => {
     if (!confirm("确定清空聊天记录吗？（会改名备份，不会真的删除）")) return;
     await api("DELETE", "/api/history");

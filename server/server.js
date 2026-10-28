@@ -9,7 +9,7 @@ const path = require("node:path");
 const { ensureConfigFile, loadConfig } = require("./lib/config");
 const { createLogger } = require("./lib/log");
 const { createLLM } = require("./lib/llm");
-const { createMemory } = require("./lib/memory");
+const { createMemory, createCompressJob, describeCompress } = require("./lib/memory");
 const { createBrain } = require("./lib/brain");
 const { createOneBot } = require("./lib/onebot");
 const { createWatchdog, createNotifier } = require("./lib/watchdog");
@@ -35,9 +35,16 @@ function rotateLog(dataDir) {
  *   /模型          看现在用的是哪个、有哪些可以换
  *   /模型 2        换成第 2 个；也可以写名字的一部分，比如「/模型 kimi」
  */
-function createCommands({ root, config, llm, log, env }) {
+function createCommands({ root, config, llm, log, env, compressJob = null }) {
   const { savePatch, replaceInPlace } = require("./lib/config");
   function handle(text) {
+    if (compressJob && /^[\/／]\s*(?:压缩|compress)\s*$/i.test(String(text || "").trim())) {
+      const { already, promise } = compressJob.start("main");
+      return {
+        now: already ? "正在压缩，稍等一下，好了告诉你" : "开始压缩聊天记录：先把聊过的整理进长期记忆，再压缩原文。可能要一两分钟",
+        later: promise.then((r) => "压缩好了\n" + describeCompress(r)).catch((e) => "压缩没成功：" + (e.friendly || e.message) + "。聊天记录没有被改动"),
+      };
+    }
     const m = /^[\/／]\s*(?:模型|model|换模型)\s*(.*)$/i.exec(String(text || "").trim());
     if (!m) return null;
     const list = config.providers;
@@ -73,12 +80,13 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   const stickers = createStickers({ config, dataDir, vision, log, random, now });
   const search = createSearch({ config, log, fetch, now });
   const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, now, random });
-  const commands = createCommands({ root, config, llm, log, env });
+  const compressJob = createCompressJob({ memory, llm, log, now });
+  const commands = createCommands({ root, config, llm, log, env, compressJob });
   const onebot = createOneBot({ config, brain, log, vision, stickers, commands, fetch, now, random, sleep });
   const notify = createNotifier({ config, log, fetch });
   const watchdog = createWatchdog({ config, onebot, notify, log, now });
-  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, now });
-  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, app };
+  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, now });
+  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, app };
 }
 
 /**

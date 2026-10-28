@@ -9,8 +9,10 @@
  * 磁盘结构（data/）：
  *   sessions/<会话>.jsonl   每行 {seq, role:"user"|"assistant", text, ts, name?}
  *   profiles/<会话>.json    {basics, facts, events, summary, summarizedUpTo, extractedUpTo, updatedAt}
+ *   archive/<会话>-<时间>.jsonl.gz   「压缩」时打包归档的旧聊天原文（可以恢复）
  */
 const fs = require("node:fs");
+const zlib = require("node:zlib");
 const path = require("node:path");
 const { ensureDir, readJson, writeJsonAtomic, safeName, ymd, fmtShort, dayDiff, createKeyedLock } = require("./util");
 const { parseJsonLoose } = require("./llm");
@@ -51,6 +53,7 @@ function emptyProfile() {
 function createMemory({ dataDir, config, log, now = Date.now }) {
   const sessDir = path.join(dataDir, "sessions");
   const profDir = path.join(dataDir, "profiles");
+  const archDir = path.join(dataDir, "archive");
   ensureDir(sessDir);
   ensureDir(profDir);
   const cache = new Map();
@@ -376,18 +379,7 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
       if (pending.length <= chat.summaryTrigger || !llm.enabled("memory")) return false;
       const chunk = pending.slice(0, pending.length - chat.keepRecent);
       if (!chunk.length) return false;
-      const userCall = friend.userName || "对方";
-      const prompt = [
-        { role: "system", content: `你在帮「${friend.name}」整理和${userCall}的聊天笔记。用「我」指${friend.name}，用「${userCall === "对方" ? "对方" : userCall}」指聊天对象。` },
-        {
-          role: "user",
-          content:
-            `已有的摘要：\n${p.summary || "（暂无）"}\n\n新的一段聊天：\n${formatForLLM(chunk, friend.name, userCall)}\n\n` +
-            "请把新聊天合并进摘要，输出一段新的完整摘要（不超过 500 字，纯文本，不要标题和列表符号）。要保留：聊过的主要话题和结论、对方的情绪变化、还没聊完或没解决的事、我答应过对方的事、我们之间的梗和称呼、对方的说话习惯和雷区（比如讨厌我怎么说话）、我们现在的关系状态、具体时间（写成几月几日）。可以删掉已经不重要的寒暄。",
-        },
-      ];
-      const text = await llm.chat(prompt, { use: "memory", temperature: 0.3, maxTokens: 1200 });
-      const summary = String(text).replace(/\s+\n/g, "\n").trim().slice(0, 1500);
+      const summary = await summarizeChunk(p.summary, chunk, llm);
       if (!summary) return false;
       const fresh = getProfile(id); // 重新读，避免覆盖期间别的改动
       fresh.summary = summary;
@@ -398,6 +390,23 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
     });
   }
 
+  /** 把一段聊天合并进已有摘要，返回新摘要 */
+  async function summarizeChunk(oldSummary, chunk, llm) {
+      const { friend } = config;
+      const userCall = friend.userName || "对方";
+      const prompt = [
+        { role: "system", content: `你在帮「${friend.name}」整理和${userCall}的聊天笔记。用「我」指${friend.name}，用「${userCall === "对方" ? "对方" : userCall}」指聊天对象。` },
+        {
+          role: "user",
+          content:
+            `已有的摘要：\n${oldSummary || "（暂无）"}\n\n新的一段聊天：\n${formatForLLM(chunk, friend.name, userCall)}\n\n` +
+            "请把新聊天合并进摘要，输出一段新的完整摘要（不超过 500 字，纯文本，不要标题和列表符号）。要保留：聊过的主要话题和结论、对方的情绪变化、还没聊完或没解决的事、我答应过对方的事、我们之间的梗和称呼、对方的说话习惯和雷区（比如讨厌我怎么说话）、我们现在的关系状态、具体时间（写成几月几日）。可以删掉已经不重要的寒暄。",
+        },
+      ];
+      const text = await llm.chat(prompt, { use: "memory", temperature: 0.3, maxTokens: 1200 });
+      return String(text).replace(/\s+\n/g, "\n").trim().slice(0, 1500);
+  }
+
   /** 每隔几条用户消息，让大模型从新聊天里整理长期记忆 */
   function maybeExtract(id, llm, { force = false } = {}) {
     return jobLock(id + ":extract", async () => {
@@ -406,7 +415,14 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
       const fresh = load(id).list.filter((m) => m.seq > p.extractedUpTo);
       const userCount = fresh.filter((m) => m.role === "user").length;
       if (!llm.enabled("memory") || !userCount || (!force && userCount < chat.extractEvery)) return false;
-      const slice = fresh.slice(-40);
+      return extractSlice(id, llm, fresh.slice(-40));
+    });
+  }
+
+  /** 让大模型从一段聊天里整理长期记忆，并记下整理到了哪一条 */
+  async function extractSlice(id, llm, slice) {
+      const { friend } = config;
+      const p = getProfile(id);
       const userCall = friend.userName || "对方";
       const current = {
         basics: Object.fromEntries(Object.entries(p.basics).map(([k, v]) => [k, v.value])),
@@ -448,6 +464,259 @@ ${formatForLLM(slice, friend.name, userCall)}
       saveProfile(id, p2);
       if (!ops) log.warn("记忆整理：模型输出不是 JSON，这次跳过");
       return Boolean(ops);
+  }
+
+  // ---------- 压缩：保留大底记忆，压缩聊天原文，减少每轮发给模型的内容和占用 ----------
+
+  const archiveFiles = (id) => {
+    try {
+      const prefix = safeName(id) + "-";
+      return fs
+        .readdirSync(archDir)
+        .filter((n) => n.startsWith(prefix) && n.endsWith(".jsonl.gz"))
+        .sort()
+        .map((n) => ({ name: n, bytes: fs.statSync(path.join(archDir, n)).size }));
+    } catch {
+      return [];
+    }
+  };
+
+  /** 现在的占用情况（压缩前后对比用） */
+  function stats(id) {
+    const p = getProfile(id);
+    const entry = load(id);
+    let fileBytes = 0;
+    try {
+      fileBytes = fs.statSync(sessFile(id)).size;
+    } catch {
+      /* 还没有记录 */
+    }
+    const r = recent(id);
+    const recentChars = r.messages.reduce((n, m) => n + m.text.length + (m.thought ? m.thought.length + 10 : 0), 0);
+    const memChars = memoryBlock(id, config.friend.userName || "对方").length;
+    const cut = Math.min(p.summarizedUpTo, p.extractedUpTo);
+    const archives = archiveFiles(id);
+    return {
+      messages: entry.list.length,
+      fileBytes,
+      unsummarized: entry.list.filter((m) => m.seq > p.summarizedUpTo).length,
+      unextracted: entry.list.filter((m) => m.seq > p.extractedUpTo).length,
+      archivable: entry.list.filter((m) => m.seq <= cut).length,
+      recentMessages: r.messages.length,
+      summaryChars: (p.summary || "").length,
+      facts: p.facts.length,
+      basics: Object.keys(p.basics).length,
+      contextChars: recentChars + (p.summary || "").length + memChars,
+      archives: archives.length,
+      archiveBytes: archives.reduce((n, a) => n + a.bytes, 0),
+    };
+  }
+
+  function backupProfile(id) {
+    try {
+      fs.copyFileSync(profFile(id), `${profFile(id)}.bak-${now()}`);
+    } catch {
+      /* 还没有档案 */
+    }
+  }
+
+  /** 让大模型把摘要压紧、把重复或过时的事实合并（只在结果看起来靠谱时才采用） */
+  async function tidyProfile(id, llm) {
+    const { friend } = config;
+    const p = getProfile(id);
+    if (!p.summary && p.facts.length < 6) return { summary: false, facts: false };
+    const userCall = friend.userName || "对方";
+    const raw = await llm.chat(
+      [
+        { role: "system", content: `你在帮「${friend.name}」把关于${userCall}的记忆整理得更精炼。只输出 JSON。` },
+        {
+          role: "user",
+          content:
+            `【聊天摘要】\n${p.summary || "（暂无）"}\n\n【记得的事】\n${JSON.stringify(p.facts.map((f) => f.text))}\n\n` +
+            '请输出 {"summary":"…","facts":["…"]}：\n' +
+            "1. summary：把摘要压缩到 350 字以内，用「我」指" + friend.name + "。必须保留：我们的关系和约定、称呼和梗、对方的性格和雷区、重要经历、还没聊完的事、具体日期。删掉寒暄和已经不重要的细节。\n" +
+            "2. facts：把记得的事去重、合并意思相同的、删掉明显过时或被新说法推翻的；每条简短、第三人称；重要的一条都不能丢。",
+        },
+      ],
+      { use: "memory", temperature: 0.2, maxTokens: 1600, json: true }
+    );
+    const j = parseJsonLoose(raw) || {};
+    const fresh = getProfile(id);
+    const done = { summary: false, facts: false };
+    const sum = typeof j.summary === "string" ? j.summary.replace(/\s+\n/g, "\n").trim() : "";
+    if (sum && (sum.length >= 60 || !fresh.summary) && sum.length < (fresh.summary || "").length) {
+      fresh.summary = sum.slice(0, 1500);
+      done.summary = true;
+    }
+    if (Array.isArray(j.facts)) {
+      const list = [...new Set(j.facts.map((x) => String(x || "").trim().slice(0, 80)).filter((x) => x.length >= 2))];
+      // 合并后至少还剩原来的一半，才认为没有丢东西
+      if (list.length && list.length <= fresh.facts.length && list.length >= Math.ceil(fresh.facts.length / 2)) {
+        fresh.facts = list.map((text) => {
+          const old = fresh.facts.find((f) => f.text === text) || fresh.facts.find((f) => similar(f.text, text));
+          return { text, at: old ? old.at : now() };
+        });
+        done.facts = true;
+      }
+    }
+    if (done.summary || done.facts) saveProfile(id, fresh);
+    return done;
+  }
+
+  /** 把已经压进摘要、也整理过记忆的旧原文打包成 .gz，从聊天记录里拿走（同步完成，不会和新消息写入交错） */
+  function archiveOld(id) {
+    const p = getProfile(id);
+    const cut = Math.min(p.summarizedUpTo, p.extractedUpTo);
+    if (!cut) return 0;
+    const file = sessFile(id);
+    let text = "";
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      return 0;
+    }
+    const old = [];
+    const keep = [];
+    let seq = 0;
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      let o;
+      try {
+        o = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!o || typeof o.text !== "string") continue;
+      seq = Number.isFinite(o.seq) && o.seq > seq ? o.seq : seq + 1;
+      const out = JSON.stringify({ ...o, seq }); // 写明序号，归档后编号也不会乱
+      (seq <= cut ? old : keep).push(out);
+    }
+    if (!old.length) return 0;
+    ensureDir(archDir);
+    const t = now();
+    fs.writeFileSync(path.join(archDir, `${safeName(id)}-${t}.jsonl.gz`), zlib.gzipSync(old.join("\n") + "\n"));
+    const tmp = `${file}.tmp-${t}`;
+    fs.writeFileSync(tmp, keep.length ? keep.join("\n") + "\n" : "", "utf8");
+    fs.renameSync(tmp, file);
+    cache.delete(id);
+    return old.length;
+  }
+
+  /** 把归档的原文放回聊天记录（按序号合并，不会重复） */
+  function restoreArchives(id) {
+    const files = archiveFiles(id);
+    if (!files.length) return 0;
+    const byseq = new Map();
+    for (const f of files) {
+      const text = zlib.gunzipSync(fs.readFileSync(path.join(archDir, f.name))).toString("utf8");
+      for (const line of text.split("\n")) {
+        try {
+          const o = JSON.parse(line);
+          if (o && Number.isFinite(o.seq)) byseq.set(o.seq, line);
+        } catch {
+          /* 空行 */
+        }
+      }
+    }
+    const file = sessFile(id);
+    let cur = "";
+    try {
+      cur = fs.readFileSync(file, "utf8");
+    } catch {
+      /* 没有 */
+    }
+    let count = 0;
+    for (const line of cur.split("\n")) {
+      try {
+        const o = JSON.parse(line);
+        if (o && Number.isFinite(o.seq)) byseq.set(o.seq, line);
+      } catch {
+        /* 空行 */
+      }
+    }
+    const lines = [...byseq.entries()].sort((a, b) => a[0] - b[0]).map((x) => x[1]);
+    const tmp = `${file}.tmp-${now()}`;
+    fs.writeFileSync(tmp, lines.join("\n") + "\n", "utf8");
+    fs.renameSync(tmp, file);
+    for (const f of files) {
+      fs.renameSync(path.join(archDir, f.name), path.join(archDir, f.name + ".restored"));
+      count++;
+    }
+    cache.delete(id);
+    log.info(`已把 ${count} 个归档恢复回聊天记录`);
+    return count;
+  }
+
+  /**
+   * 一键压缩（用户自己点了才做）：
+   *   1. 还没整理进长期记忆的聊天，全部整理一遍 —— 大底记忆不会丢；
+   *   2. 除了最近 keepRecent 条，其余聊天全部压进摘要 —— 每轮发给模型的内容变少；
+   *   3. （tidy）把摘要压紧、合并重复的记忆；
+   *   4. （archive）把已经压缩过的旧原文打包成 .gz 归档 —— 占用变小，随时可以恢复。
+   * 改动前会先备份记忆档案（profiles/*.json.bak-时间）。
+   */
+  function compress(id, llm, { keepRecent = 10, tidy = true, archive = true, onProgress = () => {} } = {}) {
+    return jobLock(id + ":compress", async () => {
+      if (!llm.enabled("memory")) throw Object.assign(new Error("还没有可用的大模型，压缩要靠大模型写摘要"), { friendly: "还没有可用的大模型，压缩要靠大模型写摘要" });
+      const before = stats(id);
+      backupProfile(id);
+      const steps = [];
+
+      // 1. 整理长期记忆
+      await jobLock(id + ":extract", async () => {
+        let rounds = 0;
+        for (;;) {
+          const p = getProfile(id);
+          const rest = load(id).list.filter((m) => m.seq > p.extractedUpTo);
+          if (!rest.some((m) => m.role === "user") || rounds >= 30) break;
+          onProgress(`整理长期记忆（还剩 ${rest.length} 条）`);
+          await extractSlice(id, llm, rest.slice(0, 40));
+          rounds++;
+        }
+        if (rounds) steps.push(`整理了 ${rounds} 批聊天进长期记忆`);
+      });
+
+      // 2. 压进摘要
+      await jobLock(id + ":summary", async () => {
+        let folded = 0;
+        for (let rounds = 0; rounds < 30; rounds++) {
+          const p = getProfile(id);
+          const pending = load(id).list.filter((m) => m.seq > p.summarizedUpTo);
+          const chunk = pending.slice(0, Math.max(0, pending.length - keepRecent)).slice(0, 80);
+          if (!chunk.length) break;
+          onProgress(`压缩聊天原文（还剩 ${pending.length - keepRecent} 条）`);
+          const summary = await summarizeChunk(p.summary, chunk, llm);
+          if (!summary) break;
+          const fresh = getProfile(id);
+          fresh.summary = summary;
+          fresh.summarizedUpTo = chunk[chunk.length - 1].seq;
+          saveProfile(id, fresh);
+          folded += chunk.length;
+        }
+        if (folded) steps.push(`把 ${folded} 条聊天原文压进了摘要`);
+      });
+
+      // 3. 精炼
+      if (tidy) {
+        onProgress("精炼摘要和记忆");
+        try {
+          const d = await tidyProfile(id, llm);
+          if (d.summary) steps.push("摘要压得更紧了");
+          if (d.facts) steps.push("合并了重复的记忆");
+        } catch (e) {
+          log.warn("精炼记忆失败（不影响压缩结果）：" + (e.friendly || e.message));
+        }
+      }
+
+      // 4. 归档
+      let archived = 0;
+      if (archive) {
+        archived = archiveOld(id);
+        if (archived) steps.push(`${archived} 条旧原文打包归档了`);
+      }
+      const after = stats(id);
+      log.info(`压缩完成：每轮发给模型的内容 ${before.contextChars} → ${after.contextChars} 字；${steps.join("；") || "没有需要压缩的"}`);
+      return { before, after, archived, steps };
     });
   }
 
@@ -505,6 +774,9 @@ ${formatForLLM(slice, friend.name, userCall)}
     relevant,
     maybeSummarize,
     maybeExtract,
+    compress,
+    stats,
+    restoreArchives,
     dueFollowUp,
     markFollowUp,
     handleCommand,
@@ -514,4 +786,55 @@ ${formatForLLM(slice, friend.name, userCall)}
   };
 }
 
-module.exports = { createMemory, similar };
+/** 压缩任务：可能要跑一两分钟，网页和 QQ 指令都通过它启动、查进度；同一会话同时只跑一个 */
+function createCompressJob({ memory, llm, log, now = Date.now }) {
+  const jobs = new Map();
+  function status(id) {
+    const j = jobs.get(id);
+    const out = j
+      ? { running: j.running, progress: j.progress, startedAt: j.startedAt, finishedAt: j.finishedAt || 0, result: j.result || null, resultText: j.result ? describeCompress(j.result) : "", error: j.error || "" }
+      : { running: false };
+    return { ...out, stats: memory.stats(id) };
+  }
+  function start(id, opts = {}) {
+    const cur = jobs.get(id);
+    if (cur && cur.running) return { already: true, promise: cur.promise };
+    const job = { running: true, progress: "准备中", startedAt: now() };
+    job.promise = memory
+      .compress(id, llm, { ...opts, onProgress: (t) => (job.progress = t) })
+      .then((r) => {
+        job.result = r;
+        return r;
+      })
+      .catch((e) => {
+        job.error = e.friendly || e.message;
+        log.warn("压缩失败：" + job.error);
+        throw e;
+      })
+      .finally(() => {
+        job.running = false;
+        job.finishedAt = now();
+      });
+    job.promise.catch(() => {});
+    jobs.set(id, job);
+    return { already: false, promise: job.promise };
+  }
+  return { start, status };
+}
+
+/** 压缩结果 → 一句给人看的话 */
+function describeCompress(r) {
+  const b = r.before;
+  const a = r.after;
+  const pct = b.contextChars ? Math.round((1 - a.contextChars / b.contextChars) * 100) : 0;
+  const kb = (n) => (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB";
+  const rows = [];
+  if (!r.steps.length) rows.push("没有需要压缩的内容，现在已经很精简了");
+  else rows.push(r.steps.join("；"));
+  rows.push(`每轮发给模型的内容：${b.contextChars} → ${a.contextChars} 字${pct > 0 ? `（少了 ${pct}%）` : ""}`);
+  if (r.archived) rows.push(`聊天记录文件：${kb(b.fileBytes)} → ${kb(a.fileBytes)}（旧原文已归档，可以恢复）`);
+  rows.push(`长期记忆：${a.basics} 项基本信息、${a.facts} 件事，摘要 ${a.summaryChars} 字`);
+  return rows.join("\n");
+}
+
+module.exports = { createMemory, createCompressJob, describeCompress, similar };

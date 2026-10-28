@@ -83,6 +83,20 @@
           </div>
         </div>
 
+        <div class="card" id="compressCard">
+          <div class="card-head"><h3>压缩聊天记录</h3><span class="muted">想压缩时自己点，不点不会动</span></div>
+          <p class="muted">先把聊过的内容全部整理进长期记忆（大底记忆不会丢），再把旧的聊天原文压成摘要。之后每轮发给模型的内容更少：更省钱、回得更快，聊天记录占的空间也更小。压缩前会自动备份记忆档案。</p>
+          <div class="stats" id="compressStats"></div>
+          <label class="check"><input type="checkbox" id="cmpTidy" checked>顺便精炼摘要、合并重复的记忆</label>
+          <label class="check"><input type="checkbox" id="cmpArchive" checked>把压缩过的旧原文打包归档（省空间；归档后翻旧账只能靠摘要和记忆，随时可以恢复）</label>
+          <label class="inline">保留最近几条原文不压缩 <input id="cmpKeep" type="number" min="4" max="40" value="10"></label>
+          <p class="muted pre" id="compressMsg"></p>
+          <div class="row end">
+            <button class="ghost" id="restoreBtn" type="button" hidden>恢复归档的原文</button>
+            <button id="compressBtn" type="button">压缩</button>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head"><h3>它的表情包</h3><span class="muted" id="stickerCount"></span></div>
           <p class="muted">它会从这里挑合适的发给你。你在 QQ 上发给它的表情包会自动收进来；不喜欢哪张点 × 删掉。</p>

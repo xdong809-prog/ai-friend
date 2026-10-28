@@ -176,3 +176,13 @@ code { background: var(--bg); padding: 1px 5px; border-radius: 5px; font-size: 1
   .row { flex-wrap: wrap; }
 }
 .modelbar[hidden] { display: none; }
+
+/* 压缩聊天记录 */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 10px 0; }
+.stats div { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.stats b { display: block; font-size: 17px; color: var(--ink); }
+.stats span { font-size: 12px; color: var(--muted); }
+label.inline { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); margin-top: 6px; }
+label.inline input { width: 72px !important; margin-top: 0 !important; }
+.pre { white-space: pre-line; }
+button[hidden] { display: none; }

@@ -377,7 +377,13 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
     if (commands && owners.includes(uid) && /^[\/／]/.test(c.text)) {
       const answer = commands.handle(c.text);
       if (answer) {
-        await callApi("send_private_msg", { user_id: Number(uid), message: [{ type: "text", data: { text: answer } }] }).catch((e) => log.warn("发指令回复失败：" + e.message));
+        const say = (text) => callApi("send_private_msg", { user_id: Number(uid), message: [{ type: "text", data: { text } }] }).catch((e) => log.warn("发指令回复失败：" + e.message));
+        if (typeof answer === "string") await say(answer);
+        else {
+          // 要跑一会儿的指令：先回一句，做完再回结果
+          await say(answer.now);
+          Promise.resolve(answer.later).then(say);
+        }
         return { handled: true, reason: "command" };
       }
     }
