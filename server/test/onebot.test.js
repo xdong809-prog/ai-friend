@@ -47,11 +47,13 @@ test("主人私聊：立即 204，回复分条发出，[QQ脸] 变成 face 段",
 });
 
 test("连发合并：短时间内的几条只回一次", async () => {
-  const { net, cfg, chats } = setup();
+  // 合并窗口给宽一点：Windows 上本机 HTTP 请求有时一次就要几十毫秒
+  const { net, cfg, chats } = setup({ qq: { mergeWindowMs: 500 } });
   const s = await start({ config: cfg, net });
   await s.api("POST", "/onebot", priv(1, [txt("我跟你说")]));
   await s.api("POST", "/onebot", priv(2, [txt("我今天"), { type: "face", data: { id: "14" } }]));
   await s.api("POST", "/onebot", priv(3, [txt("升职了！")]));
+  await new Promise((r) => setTimeout(r, 700));
   await settle(s);
   assert.equal(chats.length, 1);
   assert.equal(chats[0][chats[0].length - 1].content, "我跟你说\n我今天[微笑(QQ里常是无语/阴阳怪气)]\n升职了！");

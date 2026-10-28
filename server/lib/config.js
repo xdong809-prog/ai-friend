@@ -77,6 +77,7 @@ const DEFAULTS = {
   },
   proactive: {
     enabled: false,
+    followUp: true,
     quietHours: 20,
     from: 10,
     to: 22,
@@ -252,6 +253,7 @@ function normalizeConfig(raw) {
     },
     proactive: {
       enabled: bool(c.proactive.enabled, false),
+      followUp: bool(c.proactive.followUp, true),
       quietHours: num(c.proactive.quietHours, 20, 2, 240),
       from: num(c.proactive.from, 10, 0, 23),
       to: num(c.proactive.to, 22, 1, 24),

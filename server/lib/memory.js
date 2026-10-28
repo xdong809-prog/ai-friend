@@ -250,6 +250,39 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
     return { changed, profile: p };
   }
 
+  // ---------- 按记忆主动关心 ----------
+
+  /**
+   * 现在适合主动关心的安排（每个安排最多两次：前一晚说句加油，当天晚上 / 第二天问结果）。
+   * @returns {{event:object, stage:"before"|"after", note:string}|null}
+   */
+  function dueFollowUp(id, t = now()) {
+    const p = getProfile(id);
+    const h = new Date(t).getHours();
+    for (const e of p.events) {
+      if (!e.date || e.done) continue;
+      const f = e.followed || {};
+      const diff = dayDiff(t, e.date);
+      if (diff === 1 && h >= 20 && !f.before && !f.after) {
+        return { event: e, stage: "before", note: `对方明天（${e.date.slice(5).replace("-", "月")}日）有安排：「${e.text}」。现在是前一天晚上，你主动发消息，像朋友那样随口关心一句或者给他打打气。1~2 条，别像提醒事项，别说「记得」「别忘了」。` };
+      }
+      if (((diff === 0 && h >= 19) || diff === -1 || (diff === -2 && h < 14)) && !f.after) {
+        const when = diff === 0 ? "今天" : diff === -1 ? "昨天" : "前天";
+        return { event: e, stage: "after", note: `对方${when}有安排：「${e.text}」，你还不知道结果。现在你主动发消息问问怎么样了，像朋友那样自然，可以带点你自己的情绪（好奇、替他紧张……）。1~2 条，别一次问好几个问题。` };
+      }
+    }
+    return null;
+  }
+
+  function markFollowUp(id, eventId, stage, t = now()) {
+    const p = getProfile(id);
+    const e = p.events.find((x) => x.id === eventId);
+    if (!e) return false;
+    e.followed = { ...(e.followed || {}), [stage]: t };
+    saveProfile(id, p);
+    return true;
+  }
+
   // ---------- 给模型看的内容 ----------
 
   function memoryBlock(id, userCall) {
@@ -278,8 +311,9 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
       const diff = dayDiff(t, e.date);
       const [, m, d] = e.date.split("-").map(Number);
       const when = diff === 0 ? "今天" : diff === 1 ? "明天" : diff === 2 ? "后天" : diff === -1 ? "昨天" : diff > 0 ? `还有 ${diff} 天` : `${-diff} 天前`;
-      if (diff >= 0 && diff <= 14) rows.push(`- ${m}月${d}日（${when}）：${e.text}${e.done ? "（已聊过）" : ""}`);
-      else if (diff < 0 && diff >= -5 && !e.done) rows.push(`- ${m}月${d}日（${when}，已经过了）：${e.text} —— 还不知道结果，合适的时候可以问问`);
+      const asked = e.followed && e.followed.after ? "（你已经主动问过结果了，别再追问，等他自己说）" : "";
+      if (diff >= 0 && diff <= 14) rows.push(`- ${m}月${d}日（${when}）：${e.text}${e.done ? "（已聊过）" : asked}`);
+      else if (diff < 0 && diff >= -5 && !e.done) rows.push(`- ${m}月${d}日（${when}，已经过了）：${e.text}${asked || " —— 还不知道结果，合适的时候可以问问"}`);
     }
     if (!rows.length) return "";
     return "【对方近期的安排】（合适的时候自然地关心一下，别生硬）\n" + rows.join("\n");
@@ -471,6 +505,8 @@ ${formatForLLM(slice, friend.name, userCall)}
     relevant,
     maybeSummarize,
     maybeExtract,
+    dueFollowUp,
+    markFollowUp,
     handleCommand,
     ruleExtract,
     listSessions,

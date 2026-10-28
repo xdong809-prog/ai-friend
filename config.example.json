@@ -71,6 +71,7 @@
   },
   "proactive": {
     "enabled": false,
+    "followUp": true,
     "quietHours": 20,
     "from": 10,
     "to": 22

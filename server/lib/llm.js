@@ -199,6 +199,11 @@ function createLLM({ config, log, fetch = globalThis.fetch }) {
       if (!o.noFallback && !o.provider && use !== "vision") {
         const fb = providerById(config.llm.fallback);
         if (fb && fb.id !== target.provider.id && usable(fb)) backups.push(fb);
+        // 备用模型没设、或者和正在用的是同一个：随便找一个别的能用的顶上
+        if (!backups.length) {
+          const other = config.providers.find((p) => p.id !== target.provider.id && usable(p) && !(p.baseUrl === target.provider.baseUrl && p.model === target.model));
+          if (other) backups.push(other);
+        }
         const act = providerById(config.llm.active);
         if (use === "memory" && act && act.id !== target.provider.id && usable(act) && !backups.includes(act)) backups.push(act);
       }

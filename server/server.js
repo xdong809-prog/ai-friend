@@ -63,9 +63,10 @@ function createCommands({ root, config, llm, log, env }) {
 function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.env, fetch = globalThis.fetch, silent = false, now, random, sleep } = {}) {
   const created = ensureConfigFile(root);
   const config = loadConfig(root, env);
-  const log = createLogger({ silent, getSecrets: () => [config.llm.apiKey, config.qq.token, config.notify.webhook] });
-  if (created) log.info("第一次运行，已从 config.example.json 生成 config.json");
+  const logFile = !silent && process.stdout.isTTY ? path.join(dataDir, "logs", "server.log") : "";
+  const log = createLogger({ silent, file: logFile, getSecrets: () => [...config.providers.map((p) => p.apiKey), config.llm.apiKey, config.qq.token, config.notify.webhook] });
   fs.mkdirSync(path.join(dataDir, "logs"), { recursive: true });
+  if (created) log.info("第一次运行，已从 config.example.json 生成 config.json");
   const llm = createLLM({ config, log, fetch });
   const memory = createMemory({ dataDir, config, log, now });
   const vision = createVision({ config, llm, dataDir, log, fetch, now });
@@ -78,6 +79,44 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   const watchdog = createWatchdog({ config, onebot, notify, log, now });
   const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, now });
   return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, app };
+}
+
+/**
+ * 按记忆主动关心：每 10 分钟看一眼「对方的安排」，到点了就发一条（默认开）。
+ *   前一天 20 点后：打打气；当天 19 点后 / 第二天：问问结果。每个安排每种最多一次。
+ * 正聊着（90 分钟内说过话）不打扰，因为聊天时它自己会看到这些安排。
+ */
+function checkFollowUp({ config, brain, onebot, memory, watchdog, log }, t = Date.now(), random = Math.random) {
+  const p = config.proactive;
+  if (!p.followUp || !config.qq.enabled || !config.owner.qq.length) return null;
+  if (watchdog.status().online === false) return null;
+  const h = new Date(t).getHours();
+  if (h < Math.min(p.from, 10) || h >= Math.max(p.to, 22)) return null;
+  const st = brain.getState("main");
+  const last = Math.max(st.lastUserAt || 0, st.lastReplyAt || 0);
+  if (t - last < 90 * 60 * 1000 || t - (st.lastProactiveAt || 0) < 3 * 3600 * 1000) return null;
+  const due = memory.dueFollowUp("main", t);
+  if (!due || random() > 0.5) return null; // 不卡整点，更像人
+  return (async () => {
+    const ok = await onebot.sendProactive({ note: due.note });
+    if (ok) {
+      memory.markFollowUp("main", due.event.id, due.stage, t);
+      log.info(`主动关心了：${due.event.text}（${due.stage === "before" ? "前一晚打气" : "问结果"}）`);
+    }
+    return ok;
+  })();
+}
+
+function startFollowUp(ctx) {
+  const timer = setInterval(() => {
+    try {
+      const r = checkFollowUp(ctx);
+      if (r) r.catch((e) => ctx.log.warn("主动关心失败：" + e.message));
+    } catch (e) {
+      ctx.log.warn("主动关心失败：" + e.message);
+    }
+  }, 10 * 60 * 1000);
+  if (timer.unref) timer.unref();
 }
 
 /** 主动聊天：每 15 分钟看一眼，满足条件才发（默认关闭） */
@@ -137,6 +176,7 @@ function main() {
       if (!config.owner.qq.length) log.warn("还没设置主人 QQ，建议在网页「设置」里填上");
       watchdog.start(60000);
       startProactive(ctx);
+      startFollowUp(ctx);
     }
   });
 
@@ -156,4 +196,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { build, ROOT, HOST };
+module.exports = { build, checkFollowUp, ROOT, HOST };

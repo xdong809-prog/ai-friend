@@ -13,7 +13,7 @@ const { FACE_NAMES_FOR_PROMPT } = require("./qqfaces");
 const { PRESETS, presetOf } = require("./presets");
 const { friendlyError } = require("./llm");
 
-const VERSION = "4.2.0";
+const VERSION = "4.3.0";
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",

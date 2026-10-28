@@ -3,3 +3,5 @@ config.json.bak-*
 data/
 node_modules/
 *.log
+
+*.bundle

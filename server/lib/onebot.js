@@ -15,6 +15,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const { faceText } = require("./qqfaces");
 const { toSegments } = require("./humanize");
+const { sniffImage, sha1, readImageFile } = require("./vision");
 
 const DEDUPE_MS = 10 * 60 * 1000;
 const GROUP_CONTEXT = 40;
@@ -140,7 +141,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
           const sticker = s.type === "mface" || Number(d.sub_type) === 1 || /表情/.test(String(d.summary || ""));
           const summary = String(d.summary || "").replace(/^\[|\]$/g, "").replace(/^(?:动画表情|图片)$/, "").trim();
           const token = `\u0000IMG${images.length}\u0000`;
-          images.push({ token, url: String(d.url || (/^https?:/.test(String(d.file || "")) ? d.file : "") || ""), sticker, summary });
+          images.push({ token, url: String(d.url || (/^https?:/.test(String(d.file || "")) ? d.file : "") || ""), file: String(d.file || d.file_id || ""), sticker, summary });
           parts.push(token);
           break;
         }
@@ -197,8 +198,8 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
     for (const img of content.images) {
       let label = img.sticker ? "[表情包]" : "[图片]";
       if (img.summary && img.sticker) label = `[表情包：${img.summary}]`;
-      if (vision && img.url) {
-        const r = await vision.fromUrl(img.url, { hint: img.sticker ? "表情包" + (img.summary ? "：" + img.summary : "") : "" });
+      if (vision && vision.enabled() && (img.url || img.file)) {
+        const r = await vision.fromUrl(img.url, { hint: img.sticker ? "表情包" + (img.summary ? "：" + img.summary : "") : "", fallback: () => localImage(img.file) });
         if (r.ok && r.desc) {
           const isSticker = img.sticker || r.desc.sticker;
           label = `[${isSticker ? "表情包" : "图片"}：${r.desc.desc}]`;
@@ -211,6 +212,27 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
       text = text.replace(img.token, label);
     }
     return text.replace(/\u0000IMG\d+\u0000/g, "[图片]").trim();
+  }
+
+  /** 图片链接下载失败时，向 NapCat 要它缓存在本机的那份文件（NapCat 和本服务在同一台电脑上） */
+  async function localImage(file) {
+    if (!file || /^https?:/i.test(file)) return null;
+    if (/^base64:\/\//.test(file)) {
+      const buf = Buffer.from(file.slice(9), "base64");
+      const ext = sniffImage(buf);
+      return ext ? { buf, ext, sha1: sha1(buf) } : null;
+    }
+    const r = await callApi("get_image", { file });
+    const data = (r && r.data) || {};
+    if (data.base64) {
+      const buf = Buffer.from(String(data.base64), "base64");
+      const ext = sniffImage(buf);
+      if (ext) return { buf, ext, sha1: sha1(buf) };
+    }
+    const local = String(data.file || "").replace(/^file:\/\/\/?/, "");
+    const img = local ? readImageFile(local) : null;
+    if (!img) throw new Error("NapCat 没给出可用的本机图片");
+    return img;
   }
 
   /** QQ 上显示「对方正在输入…」（NapCat 扩展接口；不支持也没关系） */
@@ -478,10 +500,10 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
   }
 
   /** 主动消息：给主人发（由定时器调用） */
-  async function sendProactive() {
+  async function sendProactive(o = {}) {
     const owner = ownerList()[0];
     if (!owner) return false;
-    const result = await brain.proactive("main");
+    const result = await brain.proactive("main", o);
     if (!result) return false;
     await sendBubbles({ kind: "private", id: owner }, result);
     log.info("主动给主人发了消息：" + result.bubbles.join(" / "));

@@ -62,7 +62,16 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     };
   }
 
-  function stateBlock(st, t, gapMs) {
+  /** 你最近几条消息里是不是已经聊过自己此刻在干嘛了（看有没有连着 4 个字一样） */
+  function lifeMentioned(life, recentMsgs) {
+    const mine = (recentMsgs || []).filter((m) => m.role === "assistant").slice(-8).map((m) => m.text).join("\n");
+    if (!mine) return false;
+    const core = life.replace(/[，,。！？\s]/g, "");
+    for (let i = 0; i + 4 <= core.length; i++) if (mine.includes(core.slice(i, i + 4))) return true;
+    return false;
+  }
+
+  function stateBlock(st, t, gapMs, recentMsgs = []) {
     const moodAge = t - (st.moodAt || 0);
     const fresh = moodAge < 3 * 3600 * 1000;
     const rows = [`现在是 ${fmtNow(t)}。`];
@@ -70,7 +79,11 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     else if (gapMs > 0) rows.push("你们正聊着。");
     else rows.push("这是你们第一次聊天。");
     rows.push(`你现在的心情：${fresh ? st.mood : "平静"}。`);
-    rows.push(`你此刻大概在：${lifeNow(t, hashStr(config.friend.name))}（这是你的生活背景，可以自然提到，不用每次说）。`);
+    const life = lifeNow(t, hashStr(config.friend.name));
+    if (lifeMentioned(life, recentMsgs)) rows.push(`你此刻在：${life}。这个你刚才已经说过了，这轮别再提，注意力放在对方身上。`);
+    else rows.push(`你此刻大概在：${life}（这是你的生活背景，可以自然提一句，不用每次说）。`);
+    const h = new Date(t).getHours();
+    if (h < 6) rows.push("已经是深夜了，你有点困：回得短一点，可以让对方早点睡，但别每句都催。");
     return "【此刻】\n" + rows.join("\n");
   }
 
@@ -129,13 +142,17 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     if (isGroup) bubbles = bubbles.slice(0, 2);
     const parts = resolveParts(bubbles, parsed.mood, ab.stickers);
     if (!parts.length) return { empty: true, search: parsed.search, thought: parsed.thought, mood: parsed.mood };
+    const late = new Date(startedAt).getHours() < 6; // 深夜回得慢一点
     const p = plan(parts.map((x) => (x.type === "text" ? x.text : "图")), {
       inputLength: inputText.length,
       elapsedMs: now() - startedAt,
-      maxReplyDelayMs: config.humanize.maxReplyDelayMs,
+      maxReplyDelayMs: Math.round(config.humanize.maxReplyDelayMs * (late ? 1.6 : 1)),
       random,
       enabled: config.humanize.enabled && config.humanize.typingDelay,
     });
+    if (late && config.humanize.enabled && config.humanize.typingDelay && inputText) {
+      p.firstDelayMs = Math.min(Math.round(config.humanize.maxReplyDelayMs * 1.6), p.firstDelayMs + 1000 + Math.round(random() * 3000));
+    }
     return { parts, thought: parsed.thought, mood: parsed.mood, search: parsed.search, ...p };
   }
 
@@ -218,7 +235,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
         memoryBlock,
         summary,
         relevant,
-        stateBlock: stateBlock(st, startedAt, gapMs),
+        stateBlock: stateBlock(st, startedAt, gapMs, history),
         note: [...notes, ...extra].filter(Boolean).join("\n"),
       });
     const call = async (extra, opts = {}) => {
@@ -285,8 +302,12 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       .catch((e) => log.warn("整理记忆失败：" + (e.friendly || e.message)));
   }
 
-  /** 主动找对方聊天（可选功能，默认关闭） */
-  function proactive(sessionId) {
+  /**
+   * 主动找对方聊天。
+   * @param {string} sessionId
+   * @param {{note?:string}} [o]  note：这次为什么主动找（比如关心某个安排）；不给就是随口开个头
+   */
+  function proactive(sessionId, o = {}) {
     return lock(sessionId, async () => {
       if (!llm.enabled()) return null;
       const t = now();
@@ -300,8 +321,11 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
         buildDynamicPrompt({
           memoryBlock: memory.memoryBlock(sessionId, userCall()),
           summary: r.summary,
-          stateBlock: stateBlock(st, t, last ? t - last : 0),
-          note: "现在是你主动给对方发消息（对方还没说话）。像朋友那样随口开个头：分享你此刻在干嘛、关心一下对方之前提过的安排、或者聊个你突然想到的小事。只发 1~2 条，不要说「好久不见」「在吗」这种客套，不要连着发问。",
+          stateBlock: stateBlock(st, t, last ? t - last : 0, r.messages),
+          note:
+            "现在是你主动给对方发消息（对方还没说话）。" +
+            (o.note ||
+              "像朋友那样随口开个头：分享你此刻在干嘛、关心一下对方之前提过的安排、或者聊个你突然想到的小事。只发 1~2 条，不要说「好久不见」「在吗」这种客套，不要连着发问。"),
         }),
         ""
       );

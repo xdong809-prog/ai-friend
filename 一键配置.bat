@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-where node >nul 2>nul
+where node >/dev/null 2>nul
 if errorlevel 1 (
   echo 没有找到 Node.js，请先安装：https://nodejs.org
   pause

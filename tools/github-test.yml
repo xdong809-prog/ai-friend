@@ -1,0 +1,21 @@
+# 每次上传代码都自动跑一遍语法检查和全部测试（大模型和 NapCat 都是模拟的，不需要任何密钥）
+name: 测试
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        node: [18, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node tools/check.mjs

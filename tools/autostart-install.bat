@@ -3,9 +3,9 @@ setlocal
 set "ROOT=%~dp0.."
 schtasks /Create /TN "AIFriend" /SC ONLOGON /RL LIMITED /F /TR "wscript.exe \"%ROOT%\tools\run-hidden.vbs\""
 if errorlevel 1 (
-  echo è®¾ç½®å¤±è´¥ã€‚å¯ä»¥å³é”®è¿™ä¸ªæ–‡ä»¶ï¼Œé€‰â€œä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œâ€å†è¯•ä¸€æ¬¡ã€‚
+  echo ÉèÖÃÊ§°Ü¡£¿ÉÒÔÓÒ¼üÕâ¸öÎÄ¼ş£¬Ñ¡¡°ÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ¡±ÔÙÊÔÒ»´Î¡£
 ) else (
-  echo å·²è®¾ç½®ï¼šç™»å½• Windows åä¼šåœ¨åå°è‡ªåŠ¨å¯åŠ¨ AI å¥½å‹ï¼ˆæ²¡æœ‰çª—å£ï¼Œæ—¥å¿—åœ¨ data\logs\server.logï¼‰ã€‚
-  echo æƒ³å–æ¶ˆå°±è¿è¡Œ autostart-remove.bat
+  echo ÒÑÉèÖÃ£ºµÇÂ¼ Windows ºó»áÔÚºóÌ¨×Ô¶¯Æô¶¯ AI ºÃÓÑ£¨Ã»ÓĞ´°¿Ú£¬ÈÕÖ¾ÔÚ data\logs\server.log£©¡£
+  echo ÏëÈ¡Ïû¾ÍÔËĞĞ autostart-remove.bat
 )
 pause

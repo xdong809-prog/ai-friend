@@ -7,6 +7,7 @@
  *   - 失败时返回 null，上层会如实告诉模型「这张图你看不到」，避免它装作看见了。
  */
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const path = require("node:path");
 const { readJson, writeJsonAtomic } = require("./util");
 const { parseJsonLoose } = require("./llm");
@@ -45,9 +46,52 @@ async function downloadImage(url, fetchImpl, timeoutMs = 10000) {
 }
 
 
+/**
+ * 解析看图模型的输出。正常是 JSON；模型话多、被截断或者 JSON 里混了引号时，
+ * 也尽量把 desc / mood / sticker 抠出来，而不是把一整段原始 JSON 当成描述。
+ */
+function parseVisionOutput(raw) {
+  const text = String(raw || "");
+  const j = parseJsonLoose(text);
+  if (j && typeof j === "object" && j.desc) return j;
+  const field = (k) => {
+    const m = new RegExp(`["']?${k}["']?\\s*[:：]\\s*["“]?([^"”\\n,，}]*)`).exec(text);
+    return m ? m[1].trim() : "";
+  };
+  const descM =
+    /"desc"\s*:\s*"([\s\S]*?)"\s*,\s*"(?:mood|sticker)"/.exec(text) || /["']?desc["']?\s*[:：]\s*"((?:[^"\\]|\\.)*)("|$)/.exec(text);
+  let desc = descM ? descM[1] : "";
+  if (!desc && !/[{}]|"desc"/.test(text)) desc = text; // 模型直接用一句话描述了
+  desc = desc.replace(/\\n/g, " ").replace(/[{}"]/g, "").trim();
+  const sticker = /["']?sticker["']?\s*[:：]\s*(true|"true"|是)/.test(text);
+  return { desc, mood: field("mood"), sticker };
+}
+
+/** 本地图片文件 → {buf, ext, sha1}；不是图片返回 null（NapCat 会把收到的图缓存在本机） */
+function readImageFile(file) {
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || !st.size || st.size > MAX_IMAGE_BYTES) return null;
+    const buf = fs.readFileSync(file);
+    const ext = sniffImage(buf);
+    return ext ? { buf, ext, sha1: sha1(buf) } : null;
+  } catch {
+    return null;
+  }
+}
+
 function createVision({ config, llm, dataDir, log, fetch = globalThis.fetch, now = Date.now }) {
   const cacheFile = path.join(dataDir, "vision-cache.json");
   let cache = readJson(cacheFile, {}) || {};
+  // 旧版本解析失败时，会把半截 JSON 当成描述存下来；读的时候修正或丢掉
+  for (const [k, v] of Object.entries(cache)) {
+    if (!v || typeof v.desc !== "string") delete cache[k];
+    else if (/^\s*[{"]/.test(v.desc)) {
+      const fixed = parseVisionOutput(v.desc);
+      if (fixed.desc) v.desc = fixed.desc.slice(0, 80);
+      else delete cache[k];
+    }
+  }
   let dirty = false;
   let saveTimer = null;
   const inflight = new Map();
@@ -98,15 +142,15 @@ function createVision({ config, llm, dataDir, log, fetch = globalThis.fetch, now
     const task = (async () => {
       const url = `data:${MIME[ext] || "image/png"};base64,${buf.toString("base64")}`;
       const prompt =
-        "这是 QQ 聊天里收到的一张图片" + (o.hint ? `（QQ 标注为「${o.hint}」）` : "") + "。请看懂它，只输出一个 JSON：\n" +
+        "这是 QQ 聊天里收到的一张图片" + (o.hint ? `（QQ 标注为「${o.hint}」）` : "") + "。请看懂它，只输出一行 JSON，不要任何别的文字，desc 里不要用英文双引号：\n" +
         '{"desc":"一句话说清画面内容和图里的文字（不超过60字）","mood":"它表达的情绪","sticker":是否是表情包(true/false)}\n' +
         `mood 从这些里选一个：${MOODS.join("、")}。表情包要说清是什么角色/动作/配字，比如「熊猫头捂脸，配字：我真的会谢」。`;
       try {
         const raw = await llm.chat(
           [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url } }] }],
-          { use: "vision", temperature: 0.1, maxTokens: 400, timeoutMs: 30000, noFallback: true }
+          { use: "vision", temperature: 0.1, maxTokens: 800, timeoutMs: 30000, noFallback: true }
         );
-        const j = parseJsonLoose(raw) || { desc: String(raw).slice(0, 80) };
+        const j = parseVisionOutput(raw);
         const out = {
           desc: String(j.desc || "").replace(/\s+/g, " ").trim().slice(0, 80),
           mood: MOODS.includes(j.mood) ? j.mood : "平静",
@@ -131,16 +175,35 @@ function createVision({ config, llm, dataDir, log, fetch = globalThis.fetch, now
     return task;
   }
 
-  /** 下载 + 看图，一步到位；任何一步失败返回 {ok:false} */
+  /**
+   * 下载 + 看图，一步到位；任何一步失败返回 {ok:false}。
+   * o.fallback：下载失败时再试的取图办法（比如向 NapCat 要本机缓存的文件），返回 {buf, ext, sha1} 或 null
+   */
   async function fromUrl(url, o = {}) {
-    try {
-      const img = await downloadImage(url, fetch);
-      const d = await describe(img.buf, img.ext, o);
-      return { ok: Boolean(d), image: img, desc: d };
-    } catch (e) {
-      log.debug("取图失败：" + e.message);
-      return { ok: false, error: e.message };
+    let img = null;
+    let error = "";
+    if (url) {
+      try {
+        img = await downloadImage(url, fetch);
+      } catch (e) {
+        error = e.message;
+      }
+    } else error = "没有图片地址";
+    if (!img && typeof o.fallback === "function") {
+      try {
+        img = await o.fallback();
+      } catch (e) {
+        error += "；本机缓存也取不到：" + e.message;
+      }
     }
+    if (!img) {
+      stats.fail++;
+      stats.lastError = "取图失败：" + error;
+      log.warn("取图失败：" + error);
+      return { ok: false, error };
+    }
+    const d = await describe(img.buf, img.ext, o);
+    return { ok: Boolean(d), image: img, desc: d };
   }
 
   return { enabled, describe, fromUrl, cached, flush, stats: () => {
@@ -149,4 +212,4 @@ function createVision({ config, llm, dataDir, log, fetch = globalThis.fetch, now
     }, };
 }
 
-module.exports = { createVision, downloadImage, sniffImage, sha1, MIME, MOODS };
+module.exports = { createVision, downloadImage, sniffImage, sha1, readImageFile, parseVisionOutput, MIME, MOODS };
