@@ -110,20 +110,26 @@
     }
   }
 
-  // 像 QQ 一样：连着发的几句会等一小会儿再一起回
+  // 像 QQ 一样：连着发的几句会等一小会儿再一起回；输入框里还有字（你还在打）就接着等，最多等 20 秒
   let pending = [];
   let flushTimer = null;
+  let firstAt = 0;
   let busy = false;
   function queue(text) {
     const empty = box.querySelector(".empty");
     if (empty) empty.remove();
     addMsg("user", text, Date.now());
+    if (!pending.length) firstAt = Date.now();
     pending.push(text);
     clearTimeout(flushTimer);
-    flushTimer = setTimeout(flush, 1400);
+    flushTimer = setTimeout(flush, /[，,、…]$|然后$|我跟你说$/.test(text) ? 3000 : 1600);
   }
   async function flush() {
     if (busy || !pending.length) return;
+    if ($("#input").value.trim() && Date.now() - firstAt < 20000) {
+      flushTimer = setTimeout(flush, 1200);
+      return;
+    }
     busy = true;
     const texts = pending.splice(0);
     typing(true);

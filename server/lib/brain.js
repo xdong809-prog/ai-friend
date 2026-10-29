@@ -167,16 +167,21 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
    * @param {{role:string,text:string,ts:number,name?:string}[]} [a.groupContext]  群聊最近的消息（含这一轮）
    * @param {string} [a.quote]           对方引用的那条消息原文
    * @param {string[]} [a.extraNotes]    适配层补充给模型的说明
+   * @param {number} [a.saved]           texts 里前几条上一版已经记进聊天记录了（重新想时用，避免记两遍）
+   * @param {(result:object)=>Promise<boolean>} [a.beforeCommit]
+   *   想好之后、存档之前调用（适配层在这里「看消息、打字」）；返回 false 表示对方又发了新消息，
+   *   这版不存不发，返回 { stale: true }，由适配层连同新消息一起重新回
    */
   function reply(a) {
     return lock(a.sessionId, () => doReply(a));
   }
 
-  async function doReply({ sessionId, texts, channel = "web", isGroup = false, speaker = "", groupContext = null, quote = "", extraNotes = [] }) {
+  async function doReply({ sessionId, texts, channel = "web", isGroup = false, speaker = "", groupContext = null, quote = "", extraNotes = [], saved = 0, beforeCommit = null }) {
     const startedAt = now();
     const inputs = (texts || []).map((s) => String(s || "").trim()).filter(Boolean);
     if (!inputs.length) return null;
     const joined = inputs.join("\n");
+    const fresh = inputs.slice(saved);
     const st = getState(sessionId);
     const lastMsg = isGroup ? null : memory.history(sessionId, 1).messages[0];
     const prevAt = Math.max(st.lastUserAt || 0, st.lastReplyAt || 0, (lastMsg && lastMsg.ts) || 0);
@@ -190,12 +195,12 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     let relevant = "";
 
     if (!isGroup) {
-      for (const t of inputs) memory.append(sessionId, { role: "user", text: t, ts: now() });
-      for (const t of inputs) {
+      for (const t of fresh) memory.append(sessionId, { role: "user", text: t, ts: now() });
+      for (const t of fresh) {
         const n = memory.handleCommand(sessionId, t);
         if (n) notes.push(n);
       }
-      if (!llm.enabled()) memory.ruleExtract(sessionId, joined);
+      if (!llm.enabled() && fresh.length) memory.ruleExtract(sessionId, fresh.join("\n"));
       const r = memory.recent(sessionId);
       history = r.messages;
       summary = r.summary;
@@ -207,7 +212,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       notes.push(`现在是「${speaker || "有人"}」@了你，你要回应他/她。`);
     }
     if (quote) notes.push(`对方这次是引用（回复）了这条消息：「${quote.slice(0, 200)}」，要结合它来理解对方的话。`);
-    if (inputs.length > 1) notes.push(`对方刚刚连着发了 ${inputs.length} 条，把它们当成一段话来回。`);
+    if (inputs.length > 1) notes.push(`对方刚刚连着发了 ${inputs.length} 条，这是一段完整的话：先连起来弄懂对方整体想说什么、最在意的是哪一点，再像朋友那样整体回应，不要一条一条分别回。`);
 
     st.lastUserAt = startedAt;
 
@@ -218,7 +223,9 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
         bubbles.push("（还没接上大模型：在「设置」里填 API Key 后我才能真正聊天）");
       }
       const parts = bubbles.map((text) => ({ type: "text", text }));
-      return commit(sessionId, { parts, thought: "", mood: "平静", ...plan(bubbles, { random, enabled: false }) }, { st, isGroup, engine: "offline" });
+      const offline = { parts, thought: "", mood: "平静", ...plan(bubbles, { random, enabled: false }) };
+      if (beforeCommit && !(await beforeCommit(offline))) return { stale: true };
+      return commit(sessionId, offline, { st, isGroup, engine: "offline" });
     }
 
     // 明显要查实时信息的，先查再回，省一次来回
@@ -268,6 +275,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       result = { parts: bubbles.map((text) => ({ type: "text", text })), thought: "", mood: st.mood || "平静", ...plan(bubbles, { random, enabled: config.humanize.enabled }) };
     }
     if (searched) result.searchInfo = { query: searched.query, engine: searched.engine, results: searched.results.map((r) => ({ title: r.title, url: r.url, site: r.site })) };
+    if (beforeCommit && !(await beforeCommit(result))) return { stale: true };
     const out = commit(sessionId, result, { st, isGroup, engine });
     if (!isGroup && engine === "llm") background(sessionId);
     return out;

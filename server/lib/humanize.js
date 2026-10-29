@@ -221,4 +221,23 @@ function plan(bubbles, { inputLength = 10, elapsedMs = 0, maxReplyDelayMs = 6000
   return { firstDelayMs, delays };
 }
 
-module.exports = { MOODS, normalizeMood, parseOutput, toBubbles, stickerOf, removeAiTone, splitLong, tidyEnding, facesToText, toSegments, plan };
+// 话还没说完的样子：逗号/省略号结尾、停在连接词上，或者整条只是个开场白
+const UNFINISHED_END = /(?:[，,、：:；;]|\.{2,}|…+|——|然后|而且|但是|可是|不过|因为|所以|就是说|还有|或者|还是说|如果|虽然|结果|的话|比如|另外|首先|我觉得|我想说)$/;
+const OPENER = /^(?:我跟你说|跟你说|我跟你讲|跟你讲|你知道吗|你猜怎么着|对了|话说|那个|嗯那个|是这样的|事情是这样的?|听我说|有个事|有件事|问你个事|问你个问题|我有个问题)[!！~～。.]*$/;
+
+function looksUnfinished(text) {
+  const t = String(text || "").replace(/(?:\[[^\]]*\]\s*)+$/, "").trim(); // 句末的小表情不算
+  return Boolean(t) && (UNFINISHED_END.test(t) || OPENER.test(t));
+}
+
+/**
+ * 连发合并：对方最后一条之后再等多久才开始回。
+ * 话像没说完就多等一倍；只发了张图（很可能马上配字）多等一半。
+ */
+function mergeWait({ text = "", imageOnly = false } = {}, baseMs = 3000) {
+  if (looksUnfinished(text)) return baseMs * 2;
+  if (imageOnly) return Math.round(baseMs * 1.5);
+  return baseMs;
+}
+
+module.exports = { MOODS, normalizeMood, parseOutput, toBubbles, stickerOf, removeAiTone, splitLong, tidyEnding, facesToText, toSegments, plan, looksUnfinished, mergeWait };

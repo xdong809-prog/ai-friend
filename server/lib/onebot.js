@@ -3,7 +3,9 @@
  * QQ 接入：NapCat（OneBot v11 协议端）→ POST /onebot → 这里 → 对话大脑 → 调 NapCat 的 HTTP API 发回去。
  *
  * 让它更像真人的几个处理：
- *   - 连发合并：对方 2.5 秒内连发的几条当成一段话一起回（时间可配）；
+ *   - 连发合并：对方连发的几条等发完了当成一段话一起回。最后一条之后等几秒（可配）；
+ *     话像没说完（「然后」「我跟你说」、逗号结尾）就多等一会儿；QQ 显示对方还在输入就接着等；
+ *     它正在想/正准备发的时候对方又发了，就不发这版，连同新消息一起重新想；
  *   - 引用理解：对方「回复」某条消息时，把被引用的原文一起交给模型；
  *   - 打字节奏：先停顿「看消息」，再按字数一条条发；期间 QQ 上显示「对方正在输入…」；
  *   - 看图：图片和表情包交给看图模型，换成文字描述再给大模型；你发的表情包会被它收藏起来；
@@ -14,11 +16,14 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const { faceText } = require("./qqfaces");
-const { toSegments } = require("./humanize");
+const { toSegments, mergeWait } = require("./humanize");
 const { sniffImage, sha1, readImageFile } = require("./vision");
 
 const DEDUPE_MS = 10 * 60 * 1000;
 const GROUP_CONTEXT = 40;
+const TYPING_HOLD_MS = 6000; // QQ 说对方正在输入：最多再等这么久（没收到「停止输入」也不会一直等）
+const TYPING_EXTRA_MAX_MS = 8000; // 准备发出去时对方还在打字：最多为此多等这么久
+const MAX_REDOS = 2; // 一轮里最多因为新消息重新想几次（防止一直重想、一直不回）
 
 function safeEqual(a, b) {
   const x = Buffer.from(String(a));
@@ -70,6 +75,7 @@ function normalizeSegments(message, raw) {
 function createOneBot({ config, brain, log, vision = null, stickers = null, commands = null, fetch = globalThis.fetch, now = Date.now, random = Math.random, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const seen = new Map();
   const buffers = new Map();
+  const typingUntil = new Map(); // 缓冲区 key → 对方「正在输入」到什么时候
   const groups = new Map();
   let selfIdCache = 0;
   let warnedNoSig = false;
@@ -294,21 +300,71 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
 
   // ---------- 连发合并 ----------
 
-  function enqueue(key, item, run) {
+  /** 这条消息之后要等多久（看它像不像没说完、是不是只发了张图） */
+  function waitAfter(c) {
+    const text = c.text.replace(/\u0000IMG\d+\u0000/g, "").trim();
+    return mergeWait({ text, imageOnly: !text && c.images.some((i) => !i.sticker) }, config.qq.mergeWindowMs);
+  }
+
+  function enqueue(key, item, run, wait = config.qq.mergeWindowMs) {
     let b = buffers.get(key);
     if (!b) {
-      b = { items: [], timer: null, busy: false, run };
+      b = { items: [], timer: null, busy: false, run, firstAt: 0, lastAt: 0, lastWait: 0, redos: 0 };
       buffers.set(key, b);
     }
     b.run = run;
+    if (!b.items.length) b.firstAt = now();
     b.items.push(item);
-    schedule(key, b);
+    b.lastAt = now();
+    b.lastWait = wait;
+    typingUntil.delete(key); // 发出来了，说明这一句打完了
+    if (!b.busy) schedule(key, b);
   }
 
-  function schedule(key, b, wait = config.qq.mergeWindowMs) {
+  /** 定个时间开始回：等到「最后一条 + 该等的时间」和「对方停止输入」，但从第一条算起不超过 mergeMaxMs */
+  function schedule(key, b) {
+    const t = now();
+    let wait = Math.max(b.lastAt + b.lastWait - t, (typingUntil.get(key) || 0) - t, 0);
+    const cap = b.firstAt + Math.max(config.qq.mergeMaxMs, config.qq.mergeWindowMs) - t;
+    wait = Math.max(0, Math.min(wait, cap));
     clearTimeout(b.timer);
     b.timer = setTimeout(() => flush(key), wait);
     if (b.timer.unref) b.timer.unref();
+  }
+
+  /** NapCat 上报的「对方正在输入 / 停止输入」 */
+  function handleInputStatus(event) {
+    const uid = String(event.user_id || "");
+    if (!uid || (event.group_id && String(event.group_id) !== "0")) return { handled: false, reason: "input-status-ignored" };
+    const key = `p:${uid}`;
+    const st = event.status_text;
+    const typing = typeof st === "string" ? st.trim() !== "" : Number(event.event_type) === 1;
+    if (typing) typingUntil.set(key, now() + TYPING_HOLD_MS);
+    else typingUntil.delete(key);
+    const b = buffers.get(key);
+    if (b && b.items.length && !b.busy) schedule(key, b);
+    return { handled: true, reason: typing ? "typing" : "typing-stopped" };
+  }
+
+  /**
+   * 准备发出去前「看消息、打字」那一会儿：期间对方又发了消息就返回 false（这版不发了）。
+   * 对方还在打字的话，再多等一会儿看他要说什么。
+   */
+  async function holdOn(key, ms) {
+    const b = buffers.get(key);
+    const fresh = () => Boolean(b && b.items.length);
+    // 按睡了多久计时（不看钟），测试里注入的 sleep 是瞬间返回的
+    for (let waited = 0; waited < ms; ) {
+      if (fresh()) return false;
+      const step = Math.min(200, ms - waited);
+      await sleep(step);
+      waited += step;
+    }
+    for (let extra = 0; (typingUntil.get(key) || 0) > now() && extra < TYPING_EXTRA_MAX_MS; extra += 200) {
+      if (fresh()) return false;
+      await sleep(200);
+    }
+    return !fresh();
   }
 
   async function flush(key) {
@@ -324,7 +380,8 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
       log.warn("处理 QQ 消息出错：" + e.message);
     } finally {
       b.busy = false;
-      if (b.items.length) schedule(key, b, Math.min(1200, config.qq.mergeWindowMs));
+      // 回的时候对方又发了：从对方最后一条算起，等够了再回（早就等够了就马上回）
+      if (b.items.length) schedule(key, b);
       else buffers.delete(key);
     }
   }
@@ -332,7 +389,8 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
   /** 等所有排队中的消息处理完（测试与优雅退出用） */
   async function idle(maxMs = 30000) {
     const end = now() + maxMs;
-    while (buffers.size && now() < end) await sleep(20);
+    // 用真的定时器：测试注入的 sleep 是瞬间返回的，用它会卡住事件循环
+    while (buffers.size && now() < end) await new Promise((r) => setTimeout(r, 20));
   }
 
   // ---------- 事件入口 ----------
@@ -345,6 +403,9 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
 
     if (event.post_type === "notice" && event.notice_type === "notify" && event.sub_type === "poke") {
       return handlePoke(event);
+    }
+    if (event.post_type === "notice" && event.notice_type === "notify" && event.sub_type === "input_status") {
+      return handleInputStatus(event);
     }
     if (event.post_type !== "message" && event.post_type !== "message_sent") return { handled: false, reason: "not-message" };
     if (event.post_type === "message_sent") return { handled: false, reason: "self" };
@@ -387,20 +448,27 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
         return { handled: true, reason: "command" };
       }
     }
-    enqueue(`p:${uid}`, { content: c, quote: c.quote }, privateRunner(uid));
+    enqueue(`p:${uid}`, { content: c, quote: c.quote }, privateRunner(uid), waitAfter(c));
     return { handled: true, sessionId: privateSession(uid) };
   }
 
-  /** 私聊一轮：看图 →（被戳时可能戳回去）→ 大脑回复 → 按节奏发出 */
+  /**
+   * 私聊一轮：看图 →（被戳时可能戳回去）→ 大脑回复 → 停顿「看消息、打字」→ 按节奏发出。
+   * 停顿期间（或者模型还在想的时候）对方又发了消息：这版不发，连同新消息一起重新想。
+   */
   function privateRunner(uid) {
+    const key = `p:${uid}`;
     const target = { kind: "private", id: uid };
     const isOwner = ownerList().includes(uid);
     return async (items) => {
       setTyping(target);
-      // 按顺序看图（并发下载，顺序不乱）
-      const texts = await Promise.all(items.map((x) => (x.content ? seeImages(x.content, { collect: isOwner }) : Promise.resolve(x.text))));
+      // 按顺序看图（并发下载，顺序不乱）；看过的记下来，重新想时不用再看一遍
+      await Promise.all(items.map(async (x) => {
+        if (x.text === undefined) x.text = x.content ? await seeImages(x.content, { collect: isOwner }) : "";
+      }));
+      const texts = items.map((x) => x.text);
       const extraNotes = [];
-      if (items.some((x) => x.poke) && config.qq.pokeBack && random() < 0.5) {
+      if (items.some((x) => x.poke && !x.saved) && config.qq.pokeBack && random() < 0.5) {
         try {
           await callApi("friend_poke", { user_id: String(uid) });
           extraNotes.push("你已经顺手戳回去了。");
@@ -414,8 +482,25 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
         texts: texts.map((t) => t || "（回复了一条消息）"),
         quote: items.map((x) => x.quote).filter(Boolean).pop() || "",
         extraNotes,
+        saved: items.filter((x) => x.saved).length,
+        beforeCommit: async (r) => {
+          const b = buffers.get(key);
+          if (!b) return true;
+          setTyping(target);
+          if ((await holdOn(key, r.firstDelayMs || 0)) || b.redos >= MAX_REDOS) return true;
+          // 对方又发了：这几条已经记进聊天记录，放回队首，和新消息一起重新回
+          b.redos++;
+          for (const x of items) x.saved = true;
+          b.items.unshift(...items);
+          log.info(`对方又发了 ${b.items.length - items.length} 条，先不回，连起来重新想`);
+          return false;
+        },
       });
-      if (result) await sendBubbles(target, result);
+      if (!result || result.stale) return;
+      const b = buffers.get(key);
+      if (b) b.redos = 0;
+      // 停顿已经在 beforeCommit 里等过了
+      await sendBubbles(target, { ...result, firstDelayMs: 0 });
     };
   }
 
@@ -472,7 +557,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
       if (!result) return;
       pushGroup(gid, { role: "assistant", text: result.text || result.bubbles.join("\n"), ts: now() });
       await sendBubbles(target, result, items[items.length - 1].msgId);
-    });
+    }, waitAfter(c));
     return { handled: true, sessionId: `qqg_${gid}` };
   }
 

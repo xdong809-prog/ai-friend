@@ -193,7 +193,8 @@
           <label class="check"><input type="checkbox" name="owner.onlyOwner">私聊只理主人</label>
           <label class="check"><input type="checkbox" name="qq.group">在群里被 @ 时回复</label>
           <label>只在这些群里回复（群号，逗号隔开，空 = 所有群）<input name="qq.groupAllowList"></label>
-          <label>连发合并等待（毫秒）<input name="qq.mergeWindowMs" type="number" min="0" max="15000" step="100"></label>
+          <label>连发合并：你最后一条之后等多久再回（毫秒；话像没说完、还在输入时会自动多等）<input name="qq.mergeWindowMs" type="number" min="0" max="15000" step="100"></label>
+          <label>连发合并：从第一条算起最多等多久（毫秒）<input name="qq.mergeMaxMs" type="number" min="0" max="60000" step="1000"></label>
           <label class="check"><input type="checkbox" name="qq.typingStatus">回复前在 QQ 上显示“对方正在输入…”</label>
           <label class="check"><input type="checkbox" name="qq.pokeBack">被戳时有时戳回去</label>
           <details>
