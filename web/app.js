@@ -7,6 +7,14 @@
   let CFG = null;
   let STYLES = [];
   let lastTs = 0;
+  // 现在在和谁聊：空 = 主好友；否则是导入的角色 id（记在本机浏览器里）
+  let chatWith = "";
+  try {
+    chatWith = localStorage.getItem("chatWith") || "";
+  } catch {
+    /* 浏览器不让存 */
+  }
+  let PERSONAS = [];
 
   async function api(method, path, body) {
     const res = await fetch(path, {
@@ -41,6 +49,7 @@
       $$(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + b.dataset.tab));
       if (b.dataset.tab === "memory") loadMemory();
       if (b.dataset.tab === "groups") loadGroups();
+      if (b.dataset.tab === "personas") loadPersonas();
       if (b.dataset.tab === "status") loadStatus();
       if (b.dataset.tab === "models") renderModels();
     })
@@ -94,7 +103,7 @@
 
   async function loadHistory() {
     try {
-      const h = await api("GET", "/api/history?limit=200");
+      const h = await api("GET", "/api/history?limit=200" + (chatWith ? "&persona=" + encodeURIComponent(chatWith) : ""));
       box.innerHTML = "";
       lastTs = 0;
       if (!h.messages.length) {
@@ -135,7 +144,7 @@
     const texts = pending.splice(0);
     typing(true);
     try {
-      const r = await api("POST", "/api/chat", { texts });
+      const r = await api("POST", "/api/chat", { texts, persona: chatWith || undefined });
       await sleep(Math.min(r.firstDelayMs || 0, 4000));
       const parts = r.parts && r.parts.length ? r.parts : r.bubbles.map((text) => ({ type: "text", text }));
       for (let i = 0; i < parts.length; i++) {
@@ -881,11 +890,222 @@
     }
   });
 
+  // ---------- 角色（导入别人的聊天记录） ----------
+  function fmtDay(ts) {
+    const d = new Date(ts);
+    return d.getFullYear() + "." + (d.getMonth() + 1) + "." + d.getDate();
+  }
+  /** 聊天页的「和谁聊」：没有角色时整行藏起来 */
+  function renderChatWith() {
+    if (chatWith && !PERSONAS.some((p) => p.id === chatWith)) chatWith = "";
+    const sel = $("#chatWith");
+    sel.innerHTML = "";
+    const add = (value, label) => {
+      const o = el("option", "", label);
+      o.value = value;
+      sel.appendChild(o);
+    };
+    add("", (CFG ? CFG.friend.name : "主好友") + "（你的好友）");
+    PERSONAS.forEach((p) => add(p.id, p.name + "（导入的角色）"));
+    sel.value = chatWith;
+    $("#chatWithBar").hidden = !PERSONAS.length;
+    if (CFG) applyHeader();
+  }
+  async function loadPersonaList() {
+    try {
+      const r = await api("GET", "/api/personas");
+      PERSONAS = r.list || [];
+    } catch {
+      PERSONAS = [];
+    }
+    renderChatWith();
+    return PERSONAS;
+  }
+  function switchChat(id) {
+    chatWith = id;
+    try {
+      localStorage.setItem("chatWith", id);
+    } catch {
+      /* 浏览器不让存 */
+    }
+    renderChatWith();
+    loadHistory();
+  }
+  $("#chatWith").addEventListener("change", (e) => {
+    // 还有没回的消息时先别换人，免得回复串到别人那里
+    if (busy || pending.length) {
+      e.target.value = chatWith;
+      return;
+    }
+    switchChat(e.target.value);
+  });
+
+  function renderPersonas() {
+    const ul = $("#personaList");
+    ul.innerHTML = "";
+    $("#personaCount").textContent = PERSONAS.length ? PERSONAS.length + " 个" : "";
+    if (!PERSONAS.length) ul.appendChild(el("li", "muted", "还没有导入过"));
+    for (const p of PERSONAS) {
+      const li = el("li");
+      const head = el("div", "head");
+      const left = el("div");
+      const s = p.source || {};
+      left.append(el("b", "", p.name), el("div", "meta", [p.relationship, (s.count || 0) + " 条聊天（" + fmtDay(s.from) + " ~ " + fmtDay(s.to) + "）", "记得你 " + (p.facts || 0) + " 件事"].filter(Boolean).join(" · ")));
+      const btns = el("div", "row tight");
+      const chat = el("button", "small", "去聊天");
+      chat.type = "button";
+      chat.addEventListener("click", () => {
+        switchChat(p.id);
+        $('[data-tab="chat"]').click();
+      });
+      const del = el("button", "small warn", "删除");
+      del.type = "button";
+      del.addEventListener("click", async () => {
+        if (!confirm("删除角色「" + p.name + "」吗？它的聊天记录和记忆会改名备份（data/sessions、data/profiles 里的 .bak 文件），不会真的删掉。")) return;
+        try {
+          await api("POST", "/api/personas/remove", { id: p.id });
+          if (chatWith === p.id) switchChat("");
+          loadPersonas();
+        } catch (e) {
+          $("#impMsg").textContent = e.message;
+        }
+      });
+      btns.append(chat, del);
+      head.append(left, btns);
+
+      // 设定：导入时自动整理出来的，可以改
+      const det = el("details");
+      det.appendChild(el("summary", "", "设定和回忆"));
+      const field = (label, key, max, area) => {
+        const l = el("label", "", label);
+        const i = document.createElement(area ? "textarea" : "input");
+        if (area) i.rows = 4;
+        i.maxLength = max;
+        i.value = p[key] || "";
+        i.dataset.key = key;
+        l.appendChild(i);
+        det.appendChild(l);
+      };
+      field("名字", "name", 16);
+      field("你们的关系", "relationship", 30);
+      field("他/她怎么称呼你", "userCall", 16);
+      field("性格和说话方式", "persona", 600, true);
+      field("补充设定（比如：别提某件事）", "customPrompt", 1500, true);
+      if (p.selfFacts && p.selfFacts.length) det.appendChild(el("p", "", "关于他/她自己：\n" + p.selfFacts.join("\n")));
+      if (p.summary) det.appendChild(el("p", "", "你们的回忆：\n" + p.summary));
+      const row = el("div", "row end");
+      const msg = el("span", "muted");
+      const save = el("button", "", "保存设定");
+      save.type = "button";
+      save.addEventListener("click", async () => {
+        const patch = { id: p.id };
+        det.querySelectorAll("[data-key]").forEach((i) => (patch[i.dataset.key] = i.value));
+        try {
+          await api("POST", "/api/personas/update", patch);
+          msg.textContent = "已保存 ✓";
+          await loadPersonaList();
+        } catch (e) {
+          msg.textContent = e.message;
+        }
+      });
+      row.append(msg, save);
+      det.appendChild(row);
+      li.append(head, det);
+      ul.appendChild(li);
+    }
+  }
+  let impToken = "";
+  let impTimer = null;
+  async function loadPersonas() {
+    await loadPersonaList();
+    renderPersonas();
+    loadImport();
+  }
+  function renderImport(r) {
+    const btn = $("#impStart");
+    if (r.running) {
+      btn.disabled = true;
+      btn.textContent = "导入中…";
+      $("#impMsg").textContent = "正在" + (r.progress || "导入") + "……可以先去别的页面，好了这里会显示";
+    } else {
+      btn.disabled = false;
+      btn.textContent = "开始导入";
+      if (r.error) $("#impMsg").textContent = "没导入成功：" + r.error;
+      else if (r.result && r.finishedAt && Date.now() - r.finishedAt < 60000) $("#impMsg").textContent = "导入好了 ✓ 「" + r.result.name + "」在下面的列表里，点「去聊天」就能和他/她聊";
+    }
+  }
+  async function loadImport() {
+    clearTimeout(impTimer);
+    try {
+      const r = await api("GET", "/api/personas/import");
+      renderImport(r);
+      if (r.running) impTimer = setTimeout(loadImport, 1500);
+      else if (r.result && r.finishedAt && Date.now() - r.finishedAt < 5000) {
+        $("#impPreview").hidden = true;
+        $("#impFile").value = "";
+        await loadPersonaList();
+        renderPersonas();
+      }
+    } catch (e) {
+      $("#impMsg").textContent = "读取失败：" + e.message;
+    }
+  }
+  $("#impFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    $("#impPreview").hidden = true;
+    impToken = "";
+    if (!file) return;
+    $("#impMsg").textContent = "正在读取 " + file.name + "……";
+    try {
+      // 原样上传文件，编码（UTF-8 / GBK / UTF-16）由服务端判断
+      const res = await fetch("/api/personas/preview?file=" + encodeURIComponent(file.name), { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r.ok === false) throw new Error(r.error || "读取失败（" + res.status + "）");
+      impToken = r.token;
+      $("#impInfo").textContent = "认出了 " + r.count + " 条聊天，" + fmtDay(r.from) + " ~ " + fmtDay(r.to) + "\n开头几条：\n" + r.sample.map((m) => m.name + "：" + m.text).join("\n");
+      for (const [id, pick] of [["#impMe", r.guess.me], ["#impThem", r.guess.them]]) {
+        const sel = $(id);
+        sel.innerHTML = "";
+        r.speakers.forEach((sp) => {
+          const o = el("option", "", sp.name + "（" + sp.count + " 条）");
+          o.value = sp.name;
+          sel.appendChild(o);
+        });
+        sel.value = pick;
+      }
+      $("#impName").value = "";
+      $("#impName").placeholder = r.guess.them || "默认用他/她在记录里的名字";
+      $("#impPreview").hidden = false;
+      $("#impMsg").textContent = "";
+    } catch (err) {
+      $("#impMsg").textContent = err.message;
+    }
+  });
+  $("#impThem").addEventListener("change", (e) => ($("#impName").placeholder = e.target.value));
+  $("#impStart").addEventListener("click", async () => {
+    const me = $("#impMe").value;
+    const them = $("#impThem").value;
+    if (!impToken) return;
+    if (me === them) {
+      $("#impMsg").textContent = "「你」和「要扮演的人」不能是同一个";
+      return;
+    }
+    try {
+      const r = await api("POST", "/api/personas/import", { token: impToken, me, them, name: $("#impName").value.trim(), relationship: $("#impRel").value.trim() });
+      renderImport(r);
+      impTimer = setTimeout(loadImport, 1000);
+    } catch (e) {
+      $("#impMsg").textContent = e.message;
+    }
+  });
+
   // ---------- 启动 ----------
   function applyHeader() {
-    $("#friendName").textContent = CFG.friend.name;
-    $("#avatar").textContent = CFG.friend.name.slice(-1);
-    document.title = CFG.friend.name + " · AI 好友";
+    const p = PERSONAS.find((x) => x.id === chatWith);
+    const name = p ? p.name : CFG.friend.name;
+    $("#friendName").textContent = name;
+    $("#avatar").textContent = name.slice(-1);
+    document.title = name + " · AI 好友";
     const banner = $("#banner");
     if (!CFG.llm.hasKey) {
       banner.hidden = false;
@@ -902,6 +1122,7 @@
       applyHeader();
       fillSettings();
       renderModels();
+      await loadPersonaList();
       $("#friendSub").textContent = CFG.llm.hasKey ? "在线" : "简单模式（没接大模型）";
     } catch (e) {
       $("#friendSub").textContent = "连不上服务";

@@ -7,7 +7,8 @@
  * 这样即使服务开着，你浏览的其他网页也读不到聊天记录、改不了配置。
  */
 
-function readBody(req, { limit = 256 * 1024, timeoutMs = 15000 } = {}) {
+/** raw=true 时返回 Buffer（上传文件用），否则按 UTF-8 转成文字 */
+function readBody(req, { limit = 256 * 1024, timeoutMs = 15000, raw = false } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -29,7 +30,7 @@ function readBody(req, { limit = 256 * 1024, timeoutMs = 15000 } = {}) {
       }
       chunks.push(c);
     });
-    req.on("end", () => finish(null, Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => finish(null, raw ? Buffer.concat(chunks) : Buffer.concat(chunks).toString("utf8")));
     req.on("error", (e) => finish(Object.assign(e, { status: 400 })));
   });
 }

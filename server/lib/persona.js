@@ -171,11 +171,12 @@ function joinBlocks(blocks) {
  * @param {object} p.config
  * @param {boolean} [p.isGroup]
  * @param {{stickers?:boolean, search?:boolean}} [p.abilities]  本次能用的能力
+ * @param {object} [p.friend]  导入的角色（personas.friendFor）：代替 config.friend，人设来自真实聊天记录
  */
 function buildStaticPrompt(p) {
   const { config } = p;
-  const f = config.friend;
-  const style = styleOf(f.style);
+  const f = p.friend || config.friend;
+  const style = f.persona ? { persona: f.persona, examples: f.examples || [] } : styleOf(f.style);
   const userCall = f.userName || "对方";
   const maxBubbles = config.humanize.maxBubbles;
   const ab = p.abilities || {};
@@ -185,8 +186,16 @@ function buildStaticPrompt(p) {
     : `你是「${f.name}」。你和${userCall === "对方" ? "对方" : `「${userCall}」`}是${f.relationship || "好朋友"}，你们正在 QQ 上私聊。`;
 
   const lang = LANGUAGES[f.language || ""] || "";
-  const sample = style.examples && style.examples.length ? `【你说话的感觉】（示范，只学语气和节奏，不要照抄内容）\n${style.examples.join("\n")}` : "";
-  const identity = [who, `你的性格：${style.persona}`, lang ? `语言：${lang}` : "", f.customPrompt ? `补充设定（优先遵守）：${f.customPrompt}` : "", sample].filter(Boolean).join("\n");
+  const sample = style.examples && style.examples.length ? `【你说话的感觉】（${f.imported ? "都是你以前的原话，" : "示范，"}只学语气和节奏，不要照抄内容）\n${style.examples.join("\n")}` : "";
+  const selfFacts = f.selfFacts && f.selfFacts.length ? `【你自己的情况】\n${f.selfFacts.map((x) => "- " + x).join("\n")}` : "";
+  const identity = [who, `你的性格${f.imported ? "和说话方式" : ""}：${style.persona}`, lang ? `语言：${lang}` : "", f.customPrompt ? `补充设定（优先遵守）：${f.customPrompt}` : "", selfFacts, sample].filter(Boolean).join("\n");
+  // 导入的角色：以前的真实聊天就是它的记忆，要用、要一致，但不照抄
+  const memories = f.imported
+    ? `【你们以前的聊天】
+- 「更早的聊天摘要」「可能相关的更早聊天」和前面的聊天记录，都是你和对方真实聊过的，是你的记忆。回答时以它们为依据：记得的事、说过的话、一贯的态度和称呼要前后一致。
+- 不要原样照搬以前说过的句子：把以前的内容和现在聊的话题结合起来，重新组织成一句自然的新回复。
+- 记录里没有的事不要硬编具体细节，可以含糊带过、开个玩笑，或者反问对方。`
+    : "";
 
   const speak = `【怎么说话】
 - 像真人在手机上打字：口语、短句，一次发 1~3 条消息，每条通常不超过 25 个字；只有对方认真问问题、需要讲清楚时才多说几句。
@@ -233,7 +242,7 @@ function buildStaticPrompt(p) {
   }
   formatLines.push("", "示例（只是格式示例，内容要按实际情况写）：", "〔想〕他嫌我笨，其实是在撒气，逗他一下", "〔心情〕委屈", "凶我干嘛", "我又不是故意的" + (ab.stickers ? "\n[表情包:委屈]" : ""));
 
-  return joinBlocks([identity, speak, pushback, logic, media, formatLines.join("\n")]);
+  return joinBlocks([identity, memories, speak, pushback, logic, media, formatLines.join("\n")]);
 }
 
 /**

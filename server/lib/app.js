@@ -13,7 +13,7 @@ const { FACE_NAMES_FOR_PROMPT } = require("./qqfaces");
 const { PRESETS, presetOf } = require("./presets");
 const { friendlyError } = require("./llm");
 
-const VERSION = "4.6.0";
+const VERSION = "4.7.0";
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -26,7 +26,7 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
-function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, now = Date.now }) {
+function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, personas = null, now = Date.now }) {
   const webDir = path.join(root, "web");
   let server;
   const guard = createLocalGuard({
@@ -143,7 +143,10 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       const body = await readJsonBody(req);
       const texts = (Array.isArray(body.texts) ? body.texts : [body.text]).map((s) => String(s || "").slice(0, 2000)).filter((s) => s.trim());
       if (!texts.length) return { status: 400, body: { ok: false, error: "消息不能为空" } };
-      const r = await brain.reply({ sessionId: "main", channel: "web", texts });
+      // 和导入的角色聊：用它自己的会话和人设
+      const persona = body.persona && personas ? personas.friendFor(body.persona) : null;
+      if (body.persona && !persona) return { status: 404, body: { ok: false, error: "这个角色不在了" } };
+      const r = await brain.reply({ sessionId: persona ? personas.sessionOf(body.persona) : "main", channel: "web", texts, persona });
       return {
         ok: true,
         engine: r.engine,
@@ -170,7 +173,8 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
     },
     "GET /api/history": async (req, url) => {
       const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit")) || 100));
-      const h = memory.history("main", limit);
+      const pid = url.searchParams.get("persona");
+      const h = memory.history(pid && personas && personas.get(pid) ? personas.sessionOf(pid) : "main", limit);
       return { ok: true, total: h.total, messages: h.messages.map((m) => ({ role: m.role, text: facesToText(m.text), ts: m.ts })) };
     },
     "DELETE /api/history": async () => {
@@ -206,6 +210,28 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
     "POST /api/groups/clear": async () => {
       if (digest.status().running) return { status: 409, body: { ok: false, error: "正在总结，等它做完再删" } };
       return { ok: true, removed: digest.clear() };
+    },
+    // 角色：导入别人的聊天记录，新建一个扮演他/她的 AI
+    "GET /api/personas": async () => ({ ok: true, list: personas.list(), job: personas.status() }),
+    "POST /api/personas/preview": async (req, url) => {
+      const buf = await readBody(req, { limit: 40 * 1024 * 1024, timeoutMs: 60000, raw: true });
+      if (!buf.length) return { status: 400, body: { ok: false, error: "文件是空的" } };
+      return { ok: true, ...personas.preview(buf, url.searchParams.get("file") || "") };
+    },
+    "GET /api/personas/import": async () => ({ ok: true, ...personas.status() }),
+    "POST /api/personas/import": async (req) => {
+      const b = await readJsonBody(req);
+      const { already } = personas.startImport({ token: b.token, me: String(b.me || ""), them: String(b.them || ""), name: b.name, relationship: b.relationship });
+      return { ok: true, already, ...personas.status() };
+    },
+    "POST /api/personas/update": async (req) => {
+      const b = await readJsonBody(req);
+      const p = personas.update(b.id, b);
+      return p ? { ok: true, persona: p } : { status: 404, body: { ok: false, error: "这个角色不在了" } };
+    },
+    "POST /api/personas/remove": async (req) => {
+      const b = await readJsonBody(req);
+      return { ok: personas.remove(b.id) };
     },
     "POST /api/memory": async (req) => {
       const b = await readJsonBody(req);

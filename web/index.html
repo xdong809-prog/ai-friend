@@ -20,6 +20,7 @@
         <button class="tab active" data-tab="chat">聊天</button>
         <button class="tab" data-tab="memory">记忆</button>
         <button class="tab" data-tab="groups">群聊</button>
+        <button class="tab" data-tab="personas">角色</button>
         <button class="tab" data-tab="models">模型</button>
         <button class="tab" data-tab="settings">设置</button>
         <button class="tab" data-tab="status">状态</button>
@@ -29,6 +30,10 @@
     <!-- 聊天 -->
     <section class="panel active" id="panel-chat">
       <div class="banner" id="banner" hidden></div>
+      <div class="modelbar" id="chatWithBar" hidden>
+        <label for="chatWith">和谁聊</label>
+        <select id="chatWith"></select>
+      </div>
       <div class="modelbar">
         <label for="quickModel">聊天模型</label>
         <select id="quickModel"></select>
@@ -146,6 +151,34 @@
         <div class="card">
           <div class="card-head"><h3>最近的总结</h3><span class="muted" id="gdRecentInfo"></span></div>
           <ul class="list digests" id="gdRecent"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 角色 -->
+    <section class="panel" id="panel-personas">
+      <div class="scroll">
+        <p class="hint">把你和某个人的聊天记录导进来，新建一个扮演这个人的 AI：它会学他/她的说话方式，记得你们聊过的事。聊天时它会参考以前的聊天来回，但不会照搬原话。角色只在网页上聊，QQ 上还是原来的好友。</p>
+
+        <div class="card">
+          <div class="card-head"><h3>导入聊天记录</h3><span class="muted">QQ 导出的 .txt、微信导出的 .txt / .csv</span></div>
+          <p class="muted">QQ：电脑版「消息管理器」里右键聊天对象 → 导出消息记录 → 选 .txt。微信：用留痕（WeChatMsg）等工具导出成 txt 或 csv。</p>
+          <label>选择文件<input type="file" id="impFile" accept=".txt,.csv,text/plain,text/csv"></label>
+          <div id="impPreview" hidden>
+            <p class="muted pre" id="impInfo"></p>
+            <label>哪个是你<select id="impMe"></select></label>
+            <label>要扮演谁<select id="impThem"></select></label>
+            <label>角色名字<input id="impName" maxlength="16" placeholder="默认用他/她在记录里的名字"></label>
+            <label>你们的关系（可以不填，会自己看出来）<input id="impRel" maxlength="30" placeholder="比如：大学室友"></label>
+            <p class="muted">导入时会把聊天记录分段发给「整理记忆」用的那个大模型，让它整理回忆和说话方式（聊得越多越久，大概要几十秒到几分钟）。聊天记录只存在这台电脑。</p>
+            <div class="row end"><button type="button" id="impStart">开始导入</button></div>
+          </div>
+          <p class="muted pre" id="impMsg"></p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>已有的角色</h3><span class="muted" id="personaCount"></span></div>
+          <ul class="list personas" id="personaList"></ul>
         </div>
       </div>
     </section>

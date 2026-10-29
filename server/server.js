@@ -17,6 +17,7 @@ const { createVision } = require("./lib/vision");
 const { createStickers } = require("./lib/stickers");
 const { createSearch } = require("./lib/search");
 const { createGroupDigest } = require("./lib/groupdigest");
+const { createPersonas } = require("./lib/personas");
 const { createApp, VERSION } = require("./lib/app");
 const { ymd } = require("./lib/util");
 
@@ -91,12 +92,14 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   fs.mkdirSync(path.join(dataDir, "logs"), { recursive: true });
   if (created) log.info("第一次运行，已从 config.example.json 生成 config.json");
   const llm = createLLM({ config, log, fetch });
-  const memory = createMemory({ dataDir, config, log, now });
+  // personas 在下面才建好；namesFor 只在之后整理记忆时被调用
+  const memory = createMemory({ dataDir, config, log, now, namesFor: (id) => personas.namesFor(id) });
   const vision = createVision({ config, llm, dataDir, log, fetch, now });
   const stickers = createStickers({ config, dataDir, vision, log, random, now });
   const search = createSearch({ config, log, fetch, now });
   const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, now, random });
   const compressJob = createCompressJob({ memory, llm, log, now });
+  const personas = createPersonas({ config, dataDir, memory, llm, log, now });
   // onebot 和 watchdog 在下面才建好；这两个函数只在之后被调用
   const digest = createGroupDigest({
     config,
@@ -112,8 +115,8 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   const onebot = createOneBot({ config, brain, log, vision, stickers, commands, digest, fetch, now, random, sleep });
   const notify = createNotifier({ config, log, fetch });
   const watchdog = createWatchdog({ config, onebot, notify, log, now });
-  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, now });
-  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, app };
+  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, now });
+  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, app };
 }
 
 /**

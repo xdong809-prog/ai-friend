@@ -51,8 +51,8 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     }
   }
 
-  function userCall() {
-    return config.friend.userName || "对方";
+  function userCall(friend = config.friend) {
+    return friend.userName || "对方";
   }
 
   function abilities() {
@@ -71,7 +71,8 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     return false;
   }
 
-  function stateBlock(st, t, gapMs, recentMsgs = []) {
+  /** life=false：导入的角色是真实存在的人，不给它编「此刻在干嘛」 */
+  function stateBlock(st, t, gapMs, recentMsgs = [], { life: withLife = true } = {}) {
     const moodAge = t - (st.moodAt || 0);
     const fresh = moodAge < 3 * 3600 * 1000;
     const rows = [`现在是 ${fmtNow(t)}。`];
@@ -79,9 +80,11 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     else if (gapMs > 0) rows.push("你们正聊着。");
     else rows.push("这是你们第一次聊天。");
     rows.push(`你现在的心情：${fresh ? st.mood : "平静"}。`);
-    const life = lifeNow(t, hashStr(config.friend.name));
-    if (lifeMentioned(life, recentMsgs)) rows.push(`你此刻在：${life}。这个你刚才已经说过了，这轮别再提，注意力放在对方身上。`);
-    else rows.push(`你此刻大概在：${life}（这是你的生活背景，可以自然提一句，不用每次说）。`);
+    if (withLife) {
+      const life = lifeNow(t, hashStr(config.friend.name));
+      if (lifeMentioned(life, recentMsgs)) rows.push(`你此刻在：${life}。这个你刚才已经说过了，这轮别再提，注意力放在对方身上。`);
+      else rows.push(`你此刻大概在：${life}（这是你的生活背景，可以自然提一句，不用每次说）。`);
+    }
     const h = new Date(t).getHours();
     if (h < 6) rows.push("已经是深夜了，你有点困：回得短一点，可以让对方早点睡，但别每句都催。");
     return "【此刻】\n" + rows.join("\n");
@@ -116,9 +119,9 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     return [{ role: "system", content: staticPrompt }, ...msgs, { role: "system", content: dynamicPrompt }, last];
   }
 
-  function relevantBlock(items) {
+  function relevantBlock(items, call = userCall()) {
     if (!items.length) return "";
-    return "【可能相关的更早聊天】（只是参考，别生硬地提）\n" + items.map((r) => `- ${fmtShort(r.ts)} ${userCall()}：${r.user}${r.reply ? ` / 你：${r.reply}` : ""}`).join("\n");
+    return "【可能相关的更早聊天】（只是参考，别生硬地提）\n" + items.map((r) => `- ${fmtShort(r.ts)} ${call}：${r.user}${r.reply ? ` / 你：${r.reply}` : ""}`).join("\n");
   }
 
   /** 把要发的几条变成「文字 / 表情包图片」；挑不到合适表情包的标记直接去掉 */
@@ -136,8 +139,8 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     return parts;
   }
 
-  function finish(raw, { inputText, startedAt, isGroup, ab }) {
-    const parsed = parseOutput(raw, { selfName: config.friend.name });
+  function finish(raw, { inputText, startedAt, isGroup, ab, selfName = config.friend.name }) {
+    const parsed = parseOutput(raw, { selfName });
     let bubbles = toBubbles(parsed.lines, { mood: parsed.mood, maxBubbles: config.humanize.maxBubbles, stickers: ab.stickers });
     if (isGroup) bubbles = bubbles.slice(0, 2);
     const parts = resolveParts(bubbles, parsed.mood, ab.stickers);
@@ -167,6 +170,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
    * @param {{role:string,text:string,ts:number,name?:string}[]} [a.groupContext]  群聊最近的消息（含这一轮）
    * @param {string} [a.quote]           对方引用的那条消息原文
    * @param {string[]} [a.extraNotes]    适配层补充给模型的说明
+   * @param {object} [a.persona]         导入的角色（personas.friendFor），代替 config.friend；会话 id 要用它自己的
    * @param {number} [a.saved]           texts 里前几条上一版已经记进聊天记录了（重新想时用，避免记两遍）
    * @param {(result:object)=>Promise<boolean>} [a.beforeCommit]
    *   想好之后、存档之前调用（适配层在这里「看消息、打字」）；返回 false 表示对方又发了新消息，
@@ -176,7 +180,8 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     return lock(a.sessionId, () => doReply(a));
   }
 
-  async function doReply({ sessionId, texts, channel = "web", isGroup = false, speaker = "", groupContext = null, quote = "", extraNotes = [], saved = 0, beforeCommit = null }) {
+  async function doReply({ sessionId, texts, channel = "web", isGroup = false, speaker = "", groupContext = null, quote = "", extraNotes = [], saved = 0, beforeCommit = null, persona = null }) {
+    const friend = persona || config.friend;
     const startedAt = now();
     const inputs = (texts || []).map((s) => String(s || "").trim()).filter(Boolean);
     if (!inputs.length) return null;
@@ -204,9 +209,9 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       const r = memory.recent(sessionId);
       history = r.messages;
       summary = r.summary;
-      memoryBlock = memory.memoryBlock(sessionId, userCall());
+      memoryBlock = memory.memoryBlock(sessionId, userCall(friend));
       const firstSeq = history.length ? history[0].seq : Infinity;
-      relevant = relevantBlock(memory.relevant(sessionId, joined, firstSeq));
+      relevant = relevantBlock(memory.relevant(sessionId, joined, firstSeq), userCall(friend));
     } else {
       history = (groupContext || []).slice(-40);
       notes.push(`现在是「${speaker || "有人"}」@了你，你要回应他/她。`);
@@ -235,20 +240,20 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       if (intent.should) searched = await search.search(intent.query);
     }
 
-    const staticPrompt = buildStaticPrompt({ config, isGroup, abilities: { ...ab, search: ab.search && !searched } });
+    const staticPrompt = buildStaticPrompt({ config, isGroup, friend: persona || undefined, abilities: { ...ab, search: ab.search && !searched } });
     const chat = toChatMessages(history, { isGroup });
     const dynamicFor = (extra) =>
       buildDynamicPrompt({
         memoryBlock,
         summary,
         relevant,
-        stateBlock: stateBlock(st, startedAt, gapMs, history),
+        stateBlock: stateBlock(st, startedAt, gapMs, history, { life: !persona }),
         note: [...notes, ...extra].filter(Boolean).join("\n"),
       });
     const call = async (extra, opts = {}) => {
       const raw = await llm.chat(assemble(staticPrompt, chat, dynamicFor(extra), joined), opts);
       logRaw(sessionId, raw);
-      return finish(raw, { inputText: joined, startedAt, isGroup, ab });
+      return finish(raw, { inputText: joined, startedAt, isGroup, ab, selfName: friend.name });
     };
 
     let result = null;

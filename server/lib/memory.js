@@ -50,7 +50,12 @@ function emptyProfile() {
   return { version: 2, basics: {}, facts: [], events: [], summary: "", summarizedUpTo: 0, extractedUpTo: 0, updatedAt: 0 };
 }
 
-function createMemory({ dataDir, config, log, now = Date.now }) {
+/**
+ * @param {object} o
+ * @param {(id:string)=>({name:string,userCall:string}|null)} [o.namesFor]
+ *   导入的角色有自己的名字：整理记忆、写摘要时用它的名字，不用 config.friend 的
+ */
+function createMemory({ dataDir, config, log, now = Date.now, namesFor = () => null }) {
   const sessDir = path.join(dataDir, "sessions");
   const profDir = path.join(dataDir, "profiles");
   const archDir = path.join(dataDir, "archive");
@@ -61,6 +66,8 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
 
   const sessFile = (id) => path.join(sessDir, safeName(id) + ".jsonl");
   const profFile = (id) => path.join(profDir, safeName(id) + ".json");
+  /** 这个会话里「我」叫什么、聊天对象叫什么 */
+  const names = (id) => namesFor(id) || { name: config.friend.name, userCall: config.friend.userName || "对方" };
 
   // ---------- 聊天记录 ----------
 
@@ -124,6 +131,40 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
     p.extractedUpTo = 0;
     p.summary = "";
     saveProfile(id, p);
+  }
+
+  /**
+   * 一次写入一大批旧聊天（导入角色用），保留原来的时间。
+   * 写完把「更早的」标成已压进摘要、全部标成已整理过记忆：导入时已经整理过了，后台不用再从头跑一遍。
+   * @param {{role:"user"|"assistant",text:string,ts:number}[]} msgs  按时间排好
+   * @param {{summary?:string, keepRecent?:number}} [o]  keepRecent：最近几条原文每轮带给模型
+   */
+  function importMessages(id, msgs, { summary = "", keepRecent = 30 } = {}) {
+    const entry = load(id);
+    const lines = [];
+    for (const m of msgs) {
+      const msg = { seq: entry.lastSeq + 1, role: m.role === "assistant" ? "assistant" : "user", text: String(m.text).slice(0, 4000), ts: m.ts || now() };
+      entry.lastSeq = msg.seq;
+      entry.total++;
+      entry.list.push(msg);
+      lines.push(JSON.stringify(msg));
+    }
+    if (entry.list.length > MAX_CACHE) entry.list.splice(0, entry.list.length - MAX_CACHE);
+    ensureDir(sessDir);
+    if (lines.length) fs.appendFileSync(sessFile(id), lines.join("\n") + "\n", "utf8");
+    const p = getProfile(id);
+    if (summary) p.summary = String(summary).slice(0, 1500);
+    p.summarizedUpTo = Math.max(p.summarizedUpTo, entry.lastSeq - keepRecent);
+    p.extractedUpTo = entry.lastSeq;
+    saveProfile(id, p);
+    return lines.length;
+  }
+
+  /** 删掉一个会话（聊天记录和记忆都改名备份，不真删） */
+  function removeSession(id) {
+    const t = now();
+    for (const file of [sessFile(id), profFile(id)]) if (fs.existsSync(file)) fs.renameSync(file, `${file}.bak-${t}`);
+    cache.delete(id);
   }
 
   // ---------- 档案 ----------
@@ -373,13 +414,13 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
   /** 近期原文太长时，把最早的一段压进摘要 */
   function maybeSummarize(id, llm) {
     return jobLock(id + ":summary", async () => {
-      const { chat, friend } = config;
+      const { chat } = config;
       const p = getProfile(id);
       const pending = load(id).list.filter((m) => m.seq > p.summarizedUpTo);
       if (pending.length <= chat.summaryTrigger || !llm.enabled("memory")) return false;
       const chunk = pending.slice(0, pending.length - chat.keepRecent);
       if (!chunk.length) return false;
-      const summary = await summarizeChunk(p.summary, chunk, llm);
+      const summary = await summarizeChunk(id, p.summary, chunk, llm);
       if (!summary) return false;
       const fresh = getProfile(id); // 重新读，避免覆盖期间别的改动
       fresh.summary = summary;
@@ -391,9 +432,9 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
   }
 
   /** 把一段聊天合并进已有摘要，返回新摘要 */
-  async function summarizeChunk(oldSummary, chunk, llm) {
-      const { friend } = config;
-      const userCall = friend.userName || "对方";
+  async function summarizeChunk(id, oldSummary, chunk, llm) {
+      const friend = names(id);
+      const userCall = friend.userCall;
       const prompt = [
         { role: "system", content: `你在帮「${friend.name}」整理和${userCall}的聊天笔记。用「我」指${friend.name}，用「${userCall === "对方" ? "对方" : userCall}」指聊天对象。` },
         {
@@ -410,7 +451,7 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
   /** 每隔几条用户消息，让大模型从新聊天里整理长期记忆 */
   function maybeExtract(id, llm, { force = false } = {}) {
     return jobLock(id + ":extract", async () => {
-      const { chat, friend } = config;
+      const { chat } = config;
       const p = getProfile(id);
       const fresh = load(id).list.filter((m) => m.seq > p.extractedUpTo);
       const userCount = fresh.filter((m) => m.role === "user").length;
@@ -421,9 +462,9 @@ function createMemory({ dataDir, config, log, now = Date.now }) {
 
   /** 让大模型从一段聊天里整理长期记忆，并记下整理到了哪一条 */
   async function extractSlice(id, llm, slice) {
-      const { friend } = config;
+      const friend = names(id);
       const p = getProfile(id);
-      const userCall = friend.userName || "对方";
+      const userCall = friend.userCall;
       const current = {
         basics: Object.fromEntries(Object.entries(p.basics).map(([k, v]) => [k, v.value])),
         facts: p.facts.map((f) => f.text),
@@ -493,7 +534,7 @@ ${formatForLLM(slice, friend.name, userCall)}
     }
     const r = recent(id);
     const recentChars = r.messages.reduce((n, m) => n + m.text.length + (m.thought ? m.thought.length + 10 : 0), 0);
-    const memChars = memoryBlock(id, config.friend.userName || "对方").length;
+    const memChars = memoryBlock(id, names(id).userCall).length;
     const cut = Math.min(p.summarizedUpTo, p.extractedUpTo);
     const archives = archiveFiles(id);
     return {
@@ -522,10 +563,10 @@ ${formatForLLM(slice, friend.name, userCall)}
 
   /** 让大模型把摘要压紧、把重复或过时的事实合并（只在结果看起来靠谱时才采用） */
   async function tidyProfile(id, llm) {
-    const { friend } = config;
+    const friend = names(id);
     const p = getProfile(id);
     if (!p.summary && p.facts.length < 6) return { summary: false, facts: false };
-    const userCall = friend.userName || "对方";
+    const userCall = friend.userCall;
     const raw = await llm.chat(
       [
         { role: "system", content: `你在帮「${friend.name}」把关于${userCall}的记忆整理得更精炼。只输出 JSON。` },
@@ -685,7 +726,7 @@ ${formatForLLM(slice, friend.name, userCall)}
           const chunk = pending.slice(0, Math.max(0, pending.length - keepRecent)).slice(0, 80);
           if (!chunk.length) break;
           onProgress(`压缩聊天原文（还剩 ${pending.length - keepRecent} 条）`);
-          const summary = await summarizeChunk(p.summary, chunk, llm);
+          const summary = await summarizeChunk(id, p.summary, chunk, llm);
           if (!summary) break;
           const fresh = getProfile(id);
           fresh.summary = summary;
@@ -767,6 +808,8 @@ ${formatForLLM(slice, friend.name, userCall)}
     append,
     history,
     clearHistory,
+    importMessages,
+    removeSession,
     getProfile,
     applyOps,
     memoryBlock,
