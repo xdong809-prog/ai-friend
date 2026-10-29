@@ -186,3 +186,11 @@ label.inline { display: flex; align-items: center; gap: 8px; font-size: 14px; co
 label.inline input { width: 72px !important; margin-top: 0 !important; }
 .pre { white-space: pre-line; }
 button[hidden] { display: none; }
+
+/* 群聊总结 */
+.list li label.check { flex: 1; min-width: 0; }
+.list li label.check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.digests li { display: block; }
+.digests .meta { font-size: 12px; color: var(--muted); }
+.digests p { margin: 4px 0 0; white-space: pre-line; font-size: 14px; }
+label.inline input[type=time] { width: 112px !important; }

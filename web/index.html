@@ -19,6 +19,7 @@
       <nav class="tabs" role="tablist">
         <button class="tab active" data-tab="chat">聊天</button>
         <button class="tab" data-tab="memory">记忆</button>
+        <button class="tab" data-tab="groups">群聊</button>
         <button class="tab" data-tab="models">模型</button>
         <button class="tab" data-tab="settings">设置</button>
         <button class="tab" data-tab="status">状态</button>
@@ -107,6 +108,44 @@
           <div class="card-head"><h3>聊天记录</h3><span class="muted" id="historyInfo"></span></div>
           <p class="muted">清空只会把记录文件改名备份（data/sessions/ 里的 .bak 文件），记忆档案不受影响。</p>
           <div class="row end"><button class="warn" id="clearBtn" type="button">清空聊天记录</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 群聊总结 -->
+    <section class="panel" id="panel-groups">
+      <div class="scroll">
+        <p class="hint">它可以帮你盯着加了的 QQ 群：每天定时（或者你要的时候）用它自己的口吻私聊告诉你群里聊了啥。默认关闭，要你自己打开、自己勾选群。</p>
+
+        <div class="card">
+          <div class="card-head"><h3>群聊总结</h3><span class="muted" id="gdState"></span></div>
+          <label class="check"><input type="checkbox" id="gdEnabled">开启群聊总结</label>
+          <p class="muted">开启后：只记录下面勾选的群，记录只存在这台电脑（data/groups/）；总结时这些群消息会发给你用的大模型服务商；总结由它在 QQ 上私聊发给你。关掉就立刻停止记录。</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>要总结的群</h3><span class="muted" id="gdGroupInfo"></span></div>
+          <ul class="list" id="gdGroups"></ul>
+          <label class="check"><input type="checkbox" id="gdDaily">每天定时总结</label>
+          <label class="inline">时间 <input id="gdTime" type="time" value="21:00"></label>
+          <label class="inline">新消息不到 <input id="gdMin" type="number" min="1" max="1000" value="10"> 条就先不总结（只对定时有效）</label>
+          <label class="inline">群消息原文保留 <input id="gdKeep" type="number" min="1" max="60" value="7"> 天</label>
+          <div class="row end"><span class="muted" id="gdSaveMsg"></span><button type="button" class="ghost" id="gdRefresh">刷新群列表</button><button type="button" id="gdSave">保存</button></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>马上总结</h3><span class="muted">QQ 里给它发「/群总结」也行</span></div>
+          <label class="check"><input type="checkbox" id="gdSend" checked>总结好了发到我的 QQ</label>
+          <p class="muted pre" id="gdRunMsg"></p>
+          <div class="row end">
+            <button type="button" class="warn" id="gdClear">删除记录的群消息</button>
+            <button type="button" id="gdRun">现在总结</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>最近的总结</h3><span class="muted" id="gdRecentInfo"></span></div>
+          <ul class="list digests" id="gdRecent"></ul>
         </div>
       </div>
     </section>

@@ -87,6 +87,15 @@ const DEFAULTS = {
     desktop: true,
     webhook: "",
   },
+  // 群聊总结：默认关，主人在网页上自己打开、勾选要总结的群
+  groupDigest: {
+    enabled: false,
+    groups: [],
+    daily: true,
+    time: "21:00",
+    minMessages: 10,
+    keepDays: 7,
+  },
 };
 
 const STYLE_IDS = Object.keys(require("./persona").STYLES);
@@ -114,6 +123,11 @@ const num = (v, d, lo, hi) => {
 };
 const str = (v, d, max = 2000) => (typeof v === "string" ? v.trim().slice(0, max) : d);
 const bool = (v, d) => (typeof v === "boolean" ? v : d);
+/** "9:5" → "09:05"；不是合法时间就用默认值 */
+const hhmm = (v, d) => {
+  const m = /^(\d{1,2}):(\d{1,2})$/.exec(String(v || "").trim());
+  return m && Number(m[1]) < 24 && Number(m[2]) < 60 ? `${m[1].padStart(2, "0")}:${m[2].padStart(2, "0")}` : d;
+};
 const idList = (v) =>
   (Array.isArray(v) ? v : String(v || "").split(/[\s,，;；]+/))
     .map((x) => String(x).trim())
@@ -263,6 +277,14 @@ function normalizeConfig(raw) {
     notify: {
       desktop: bool(c.notify.desktop, true),
       webhook: str(c.notify.webhook, "", 500),
+    },
+    groupDigest: {
+      enabled: bool(c.groupDigest.enabled, false),
+      groups: idList(c.groupDigest.groups),
+      daily: bool(c.groupDigest.daily, true),
+      time: hhmm(c.groupDigest.time, D.groupDigest.time),
+      minMessages: num(c.groupDigest.minMessages, D.groupDigest.minMessages, 1, 1000),
+      keepDays: num(c.groupDigest.keepDays, D.groupDigest.keepDays, 1, 60),
     },
   };
 }

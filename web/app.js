@@ -40,6 +40,7 @@
       $$(".tab").forEach((x) => x.classList.toggle("active", x === b));
       $$(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + b.dataset.tab));
       if (b.dataset.tab === "memory") loadMemory();
+      if (b.dataset.tab === "groups") loadGroups();
       if (b.dataset.tab === "status") loadStatus();
       if (b.dataset.tab === "models") renderModels();
     })
@@ -725,6 +726,159 @@
   $("#testQq").addEventListener("click", async () => {
     await api("POST", "/api/test-qq").catch(() => {});
     loadStatus();
+  });
+
+  // ---------- 群聊总结 ----------
+  let gdList = [];
+  let gdOnline = true;
+  const gdCfg = () => (CFG && CFG.groupDigest) || { enabled: false, groups: [], daily: true, time: "21:00", minMessages: 10, keepDays: 7 };
+  function renderGroups() {
+    const g = gdCfg();
+    $("#gdEnabled").checked = g.enabled;
+    $("#gdDaily").checked = g.daily;
+    $("#gdTime").value = g.time;
+    $("#gdMin").value = g.minMessages;
+    $("#gdKeep").value = g.keepDays;
+    $("#gdState").textContent = !g.enabled ? "没开" : g.groups.length ? "开着 · 总结 " + g.groups.length + " 个群" : "开着 · 还没勾选群";
+    ["#gdDaily", "#gdTime", "#gdMin", "#gdKeep", "#gdSave", "#gdRun"].forEach((s) => ($(s).disabled = !g.enabled));
+    $("#gdGroupInfo").textContent = !gdOnline ? "连不上 NapCat，只列出勾选过的群" : gdList.length ? "它加了 " + gdList.length + " 个群" : "";
+    const ul = $("#gdGroups");
+    ul.innerHTML = "";
+    if (!gdList.length) ul.appendChild(el("li", "muted", gdOnline ? "它还没加任何群" : "连不上 NapCat：先启动 QQ（NapCat），再点「刷新群列表」"));
+    for (const x of gdList) {
+      const li = el("li");
+      const lab = el("label", "check");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = x.id;
+      cb.checked = g.groups.includes(x.id);
+      cb.disabled = !g.enabled;
+      lab.append(cb, el("span", "", x.name));
+      const info = [];
+      if (x.members) info.push(x.members + " 人");
+      if (x.watching) info.push(x.pending + " 条新消息");
+      li.append(lab, el("span", "tag", info.join(" · ")));
+      ul.appendChild(li);
+    }
+  }
+  function renderDigest(r) {
+    const btn = $("#gdRun");
+    const msg = $("#gdRunMsg");
+    if (r.running) {
+      btn.disabled = true;
+      btn.textContent = "总结中…";
+      msg.textContent = "正在" + (r.progress || "总结") + "……";
+    } else {
+      btn.disabled = !gdCfg().enabled;
+      btn.textContent = "现在总结";
+      msg.textContent = r.error ? "没总结成：" + r.error : r.resultText || "";
+    }
+    const ul = $("#gdRecent");
+    ul.innerHTML = "";
+    const list = r.recent || [];
+    $("#gdRecentInfo").textContent = list.length ? "最近 " + list.length + " 次" : "";
+    if (!list.length) ul.appendChild(el("li", "muted", "还没有总结过"));
+    for (const s of list) {
+      const li = el("li");
+      li.append(
+        el("div", "meta", s.name + " · " + fmtTime(s.from) + " ~ " + fmtTime(s.to) + " · " + s.count + " 条 · " + (s.sent ? "已发到 QQ" : "没发到 QQ")),
+        el("p", "", s.text)
+      );
+      ul.appendChild(li);
+    }
+  }
+  let gdTimer = null;
+  async function loadDigest() {
+    clearTimeout(gdTimer);
+    try {
+      const r = await api("GET", "/api/groups/digest");
+      renderDigest(r);
+      if (r.running) gdTimer = setTimeout(loadDigest, 1500);
+      else if (r.finishedAt && Date.now() - r.finishedAt < 5000) loadGroupList();
+    } catch (e) {
+      $("#gdRunMsg").textContent = "读取失败：" + e.message;
+    }
+  }
+  async function loadGroupList() {
+    try {
+      const r = await api("GET", "/api/groups");
+      gdList = r.groups || [];
+      gdOnline = r.online !== false;
+    } catch (e) {
+      gdList = [];
+      gdOnline = false;
+    }
+    renderGroups();
+  }
+  function loadGroups() {
+    renderGroups();
+    loadGroupList();
+    loadDigest();
+  }
+  async function saveDigest(patch) {
+    const r = await api("POST", "/api/config", { groupDigest: patch });
+    CFG = r.config;
+    renderGroups();
+    loadGroupList();
+  }
+  $("#gdEnabled").addEventListener("change", async (e) => {
+    const on = e.target.checked;
+    const ok = on
+      ? confirm(
+          "开启群聊总结？\n\n" +
+            "· 只记录你勾选的群，记录只存在这台电脑（data/groups/）\n" +
+            "· 总结时，这些群消息会发给你用的大模型服务商\n" +
+            "· 总结由它在 QQ 上私聊发给你，也会记进你们的聊天记录\n" +
+            "· 随时可以关掉，关掉就停止记录"
+        )
+      : confirm("关闭群聊总结？关掉后不再记录群消息，也不再定时总结。已经记下的群消息还在，想删可以点「删除记录的群消息」。");
+    if (!ok) {
+      e.target.checked = !on;
+      return;
+    }
+    try {
+      await saveDigest({ enabled: on });
+      $("#gdSaveMsg").textContent = on ? "已开启，勾选要总结的群后点保存" : "已关闭";
+    } catch (err) {
+      e.target.checked = !on;
+      $("#gdSaveMsg").textContent = err.message;
+    }
+  });
+  $("#gdSave").addEventListener("click", async () => {
+    const groups = $$("#gdGroups input[type=checkbox]:checked").map((x) => x.value);
+    // 连不上 NapCat 时列表里只有勾选过的群，照样按勾选保存
+    try {
+      await saveDigest({
+        groups,
+        daily: $("#gdDaily").checked,
+        time: $("#gdTime").value || "21:00",
+        minMessages: Number($("#gdMin").value) || 10,
+        keepDays: Number($("#gdKeep").value) || 7,
+      });
+      $("#gdSaveMsg").textContent = "已保存 ✓";
+    } catch (e) {
+      $("#gdSaveMsg").textContent = e.message;
+    }
+  });
+  $("#gdRefresh").addEventListener("click", loadGroupList);
+  $("#gdRun").addEventListener("click", async () => {
+    try {
+      const r = await api("POST", "/api/groups/digest", { send: $("#gdSend").checked });
+      renderDigest(r);
+      gdTimer = setTimeout(loadDigest, 1000);
+    } catch (e) {
+      $("#gdRunMsg").textContent = e.message;
+    }
+  });
+  $("#gdClear").addEventListener("click", async () => {
+    if (!confirm("删除所有记录下来的群消息原文吗？（总结过的内容还在，删了不能恢复）")) return;
+    try {
+      const r = await api("POST", "/api/groups/clear");
+      $("#gdRunMsg").textContent = "删好了（" + r.removed + " 个群的记录）";
+      loadGroupList();
+    } catch (e) {
+      $("#gdRunMsg").textContent = e.message;
+    }
   });
 
   // ---------- 启动 ----------

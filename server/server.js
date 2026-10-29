@@ -16,7 +16,9 @@ const { createWatchdog, createNotifier } = require("./lib/watchdog");
 const { createVision } = require("./lib/vision");
 const { createStickers } = require("./lib/stickers");
 const { createSearch } = require("./lib/search");
+const { createGroupDigest } = require("./lib/groupdigest");
 const { createApp, VERSION } = require("./lib/app");
+const { ymd } = require("./lib/util");
 
 const ROOT = path.resolve(__dirname, "..");
 const HOST = "127.0.0.1";
@@ -34,10 +36,24 @@ function rotateLog(dataDir) {
  * 主人在 QQ 里可以用的小指令（不经过大模型）：
  *   /模型          看现在用的是哪个、有哪些可以换
  *   /模型 2        换成第 2 个；也可以写名字的一部分，比如「/模型 kimi」
+ *   /压缩          压缩聊天记录
+ *   /群总结        马上总结勾选的群（要先在网页「群聊总结」页打开）
  */
-function createCommands({ root, config, llm, log, env, compressJob = null }) {
+function createCommands({ root, config, llm, log, env, compressJob = null, digest = null }) {
   const { savePatch, replaceInPlace } = require("./lib/config");
   function handle(text) {
+    if (digest && /^[\/／]\s*(?:群总结|群聊总结)\s*$/.test(String(text || "").trim())) {
+      const g = config.groupDigest;
+      if (!g.enabled || !g.groups.length) return "还没开启群聊总结：打开网页「群聊总结」页，打开开关并勾选要总结的群";
+      const { already, promise } = digest.start({ force: true, send: true });
+      return {
+        now: already ? "正在看群消息呢，好了发你" : "好，我去翻翻群里聊了啥",
+        // 总结本身会直接发过来；只有一条都没发出去时才补一句为什么
+        later: promise
+          .then((out) => (out.results.some((r) => r.sent) ? "" : digest.describe(out)))
+          .catch((e) => "群聊总结没成功：" + (e.friendly || e.message)),
+      };
+    }
     if (compressJob && /^[\/／]\s*(?:压缩|compress)\s*$/i.test(String(text || "").trim())) {
       const { already, promise } = compressJob.start("main");
       return {
@@ -81,12 +97,52 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   const search = createSearch({ config, log, fetch, now });
   const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, now, random });
   const compressJob = createCompressJob({ memory, llm, log, now });
-  const commands = createCommands({ root, config, llm, log, env, compressJob });
-  const onebot = createOneBot({ config, brain, log, vision, stickers, commands, fetch, now, random, sleep });
+  // onebot 和 watchdog 在下面才建好；这两个函数只在之后被调用
+  const digest = createGroupDigest({
+    config,
+    dataDir,
+    llm,
+    memory,
+    log,
+    now,
+    deliver: (text) => onebot.sendToOwner(text),
+    listGroups: async () => (await onebot.callApi("get_group_list", {})).data || [],
+  });
+  const commands = createCommands({ root, config, llm, log, env, compressJob, digest });
+  const onebot = createOneBot({ config, brain, log, vision, stickers, commands, digest, fetch, now, random, sleep });
   const notify = createNotifier({ config, log, fetch });
   const watchdog = createWatchdog({ config, onebot, notify, log, now });
-  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, now });
-  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, app };
+  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, now });
+  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, app };
+}
+
+/**
+ * 群聊总结：每天到了设定的时间（默认 21:00）总结一次勾选的群，发到主人 QQ。每天最多一次。
+ * 新消息不够 minMessages 条的群这次跳过，留到下次一起说。
+ */
+function checkGroupDigest({ config, digest, watchdog }, t = Date.now()) {
+  const g = config.groupDigest;
+  if (!g.enabled || !g.daily || !g.groups.length || !config.qq.enabled || !config.owner.qq.length) return null;
+  if (watchdog.status().online === false) return null; // QQ 掉线时先不做，回来了再说
+  const [hh, mm] = g.time.split(":").map(Number);
+  const d = new Date(t);
+  if (d.getHours() * 60 + d.getMinutes() < hh * 60 + mm) return null;
+  const today = ymd(t);
+  if (digest.lastDaily() === today) return null;
+  digest.markDaily(today);
+  return digest.start({ send: true }).promise;
+}
+
+function startGroupDigest(ctx) {
+  const timer = setInterval(() => {
+    try {
+      const r = checkGroupDigest(ctx);
+      if (r) r.catch((e) => ctx.log.warn("群聊总结失败：" + e.message));
+    } catch (e) {
+      ctx.log.warn("群聊总结失败：" + e.message);
+    }
+  }, 5 * 60 * 1000);
+  if (timer.unref) timer.unref();
 }
 
 /**
@@ -185,6 +241,7 @@ function main() {
       watchdog.start(60000);
       startProactive(ctx);
       startFollowUp(ctx);
+      startGroupDigest(ctx);
     }
   });
 
@@ -204,4 +261,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { build, checkFollowUp, ROOT, HOST };
+module.exports = { build, checkFollowUp, checkGroupDigest, ROOT, HOST };

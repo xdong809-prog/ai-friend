@@ -10,7 +10,8 @@
  *   - 打字节奏：先停顿「看消息」，再按字数一条条发；期间 QQ 上显示「对方正在输入…」；
  *   - 看图：图片和表情包交给看图模型，换成文字描述再给大模型；你发的表情包会被它收藏起来；
  *   - 发表情包：模型写 [表情包:关键词]，从表情包库挑一张以图片发出；
- *   - 戳一戳：私聊里戳它，它会回应，有时还会戳回去。
+ *   - 戳一戳：私聊里戳它，它会回应，有时还会戳回去；
+ *   - 群聊总结：主人在网页上勾选的群，消息会记下来留给 groupdigest.js 总结（就算不在群里说话）。
  * 安全：入站上报可校验签名（qq.inboundAuth），私聊只认主人（owner.onlyOwner）。
  */
 const crypto = require("node:crypto");
@@ -72,7 +73,7 @@ function normalizeSegments(message, raw) {
   return [];
 }
 
-function createOneBot({ config, brain, log, vision = null, stickers = null, commands = null, fetch = globalThis.fetch, now = Date.now, random = Math.random, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+function createOneBot({ config, brain, log, vision = null, stickers = null, commands = null, digest = null, fetch = globalThis.fetch, now = Date.now, random = Math.random, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const seen = new Map();
   const buffers = new Map();
   const typingUntil = new Map(); // 缓冲区 key → 对方「正在输入」到什么时候
@@ -119,7 +120,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
   }
 
   /** 把消息段变成给模型看的文字；图片先放占位符，之后由 seeImages 换成「[图片：描述]」 */
-  async function readContent(segs, self) {
+  async function readContent(segs, self, { fetchQuote = true } = {}) {
     const parts = [];
     const images = [];
     let mentioned = false;
@@ -173,7 +174,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
     }
     let quote = "";
     let quoteFromSelf = false;
-    if (quoteId) {
+    if (quoteId && fetchQuote) {
       try {
         const r = await callApi("get_msg", { message_id: Number(quoteId) || quoteId });
         const msg = r.data || {};
@@ -443,7 +444,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
         else {
           // 要跑一会儿的指令：先回一句，做完再回结果
           await say(answer.now);
-          Promise.resolve(answer.later).then(say);
+          Promise.resolve(answer.later).then((t) => t && say(t));
         }
         return { handled: true, reason: "command" };
       }
@@ -523,14 +524,22 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
   }
 
   async function handleGroup(event, segs, self) {
-    if (!config.qq.group) return { handled: false, reason: "group-off" };
     const gid = String(event.group_id);
     const allow = config.qq.groupAllowList;
-    if (allow.length && !allow.includes(gid)) return { handled: false, reason: "group-not-allowed" };
-    const c = await readContent(segs, self);
+    const replying = config.qq.group && (!allow.length || allow.includes(gid));
+    // 群聊总结：勾选了的群，就算不在群里说话也要记下来
+    const recording = Boolean(digest && digest.watching(gid));
+    if (!replying && !recording) return { handled: false, reason: config.qq.group ? "group-not-allowed" : "group-off" };
+    const c = await readContent(segs, self, { fetchQuote: replying });
     const sender = event.sender || {};
     const name = sender.card || sender.nickname || String(event.user_id);
     const plain = plainText(c);
+    if (recording) {
+      const owners = ownerList();
+      const atOwner = segs.some((s) => s.type === "at" && owners.includes(String((s.data || {}).qq)));
+      digest.record(gid, { ts: now(), uid: event.user_id, name, text: plain, atOwner });
+    }
+    if (!replying) return { handled: false, reason: "group-recorded" };
 
     const named = !config.qq.groupAtOnly && config.friend.name && plain.includes(config.friend.name);
     const triggered = c.mentioned || c.quoteFromSelf || named;
@@ -555,7 +564,9 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
         groupContext: groupBuffer(gid).slice(),
       });
       if (!result) return;
-      pushGroup(gid, { role: "assistant", text: result.text || result.bubbles.join("\n"), ts: now() });
+      const said = result.text || result.bubbles.join("\n");
+      pushGroup(gid, { role: "assistant", text: said, ts: now() });
+      if (digest) digest.record(gid, { ts: now(), uid: selfIdCache || config.qq.selfId, name: config.friend.name, text: said, self: true });
       await sendBubbles(target, result, items[items.length - 1].msgId);
     }, waitAfter(c));
     return { handled: true, sessionId: `qqg_${gid}` };
@@ -601,6 +612,31 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
     return true;
   }
 
+  /** 给主人发一段纯文本（群聊总结用）；太长就按段落拆成几条。发出去了返回 true */
+  async function sendToOwner(text) {
+    const owner = ownerList()[0];
+    if (!owner || !String(text || "").trim()) return false;
+    const pieces = [];
+    let cur = "";
+    for (const para of String(text).split("\n")) {
+      if (cur && cur.length + para.length + 1 > 1500) {
+        pieces.push(cur);
+        cur = "";
+      }
+      cur = cur ? cur + "\n" + para : para;
+    }
+    if (cur) pieces.push(cur);
+    try {
+      for (const p of pieces) await callApi("send_private_msg", { user_id: Number(owner), message: toSegments(p) });
+      stats.replied++;
+      return true;
+    } catch (e) {
+      stats.sendError = e.message;
+      log.warn("给主人发消息失败：" + e.message);
+      return false;
+    }
+  }
+
   async function fetchSelfId() {
     try {
       const r = await callApi("get_login_info", {});
@@ -611,7 +647,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
     }
   }
 
-  return { accept, handleEvent, callApi, sendBubbles, sendProactive, fetchSelfId, idle, stats: () => ({ ...stats, selfId: selfIdCache || config.qq.selfId }), _groups: groups };
+  return { accept, handleEvent, callApi, sendBubbles, sendProactive, sendToOwner, fetchSelfId, idle, stats: () => ({ ...stats, selfId: selfIdCache || config.qq.selfId }), _groups: groups };
 }
 
 module.exports = { createOneBot, verifyInbound, parseCQ, normalizeSegments };

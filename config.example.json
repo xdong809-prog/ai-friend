@@ -80,5 +80,13 @@
   "notify": {
     "desktop": true,
     "webhook": ""
+  },
+  "groupDigest": {
+    "enabled": false,
+    "groups": [],
+    "daily": true,
+    "time": "21:00",
+    "minMessages": 10,
+    "keepDays": 7
   }
 }

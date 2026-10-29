@@ -13,7 +13,7 @@ const { FACE_NAMES_FOR_PROMPT } = require("./qqfaces");
 const { PRESETS, presetOf } = require("./presets");
 const { friendlyError } = require("./llm");
 
-const VERSION = "4.5.0";
+const VERSION = "4.6.0";
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -26,7 +26,7 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
-function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, now = Date.now }) {
+function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, now = Date.now }) {
   const webDir = path.join(root, "web");
   let server;
   const guard = createLocalGuard({
@@ -191,6 +191,21 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       if (compressJob.status("main").running) return { status: 409, body: { ok: false, error: "正在压缩，等它做完再恢复" } };
       const n = memory.restoreArchives("main");
       return { ok: true, restored: n, ...compressJob.status("main") };
+    },
+    // 群聊总结：群列表（带是否勾选、有几条新消息）；开关和勾选走 POST /api/config 的 groupDigest
+    "GET /api/groups": async () => ({ ok: true, ...(await digest.groups()) }),
+    "GET /api/groups/digest": async () => ({ ok: true, ...digest.status(), recent: digest.recent(30) }),
+    "POST /api/groups/digest": async (req) => {
+      const b = await readJsonBody(req);
+      const g = config.groupDigest;
+      if (!g.enabled || !g.groups.length) return { status: 400, body: { ok: false, error: "先打开群聊总结，并勾选要总结的群" } };
+      if (!llm.enabled("memory")) return { status: 400, body: { ok: false, error: "还没有可用的大模型，总结要靠大模型来写。先去「模型」页添加一个" } };
+      const { already } = digest.start({ force: true, send: b.send !== false });
+      return { ok: true, already, ...digest.status(), recent: digest.recent(30) };
+    },
+    "POST /api/groups/clear": async () => {
+      if (digest.status().running) return { status: 409, body: { ok: false, error: "正在总结，等它做完再删" } };
+      return { ok: true, removed: digest.clear() };
     },
     "POST /api/memory": async (req) => {
       const b = await readJsonBody(req);
