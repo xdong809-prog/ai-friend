@@ -60,7 +60,7 @@ function createPersonas({ config, dataDir, memory, llm, log, now = Date.now }) {
     return all().map((p) => {
       const sid = sessionOf(p.id);
       const prof = memory.getProfile(sid);
-      return { ...p, messages: memory.history(sid, 1).total, facts: prof.facts.length + Object.keys(prof.basics).length, summary: prof.summary };
+      return { ...p, messages: memory.history(sid, 1).total, facts: prof.facts.length + Object.keys(prof.basics).length, summary: prof.summary, rules: prof.rules };
     });
   }
 

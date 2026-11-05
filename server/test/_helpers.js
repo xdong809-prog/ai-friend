@@ -53,6 +53,7 @@ function fakeNet({ llm = () => "〔想〕嗯\n〔心情〕平静\n好呀", onebo
       calls.llm.push(body);
       const out = await llm(body.messages, body);
       if (out && out.__status) return jsonResponse({ error: "x" }, out.__status);
+      if (out && out.__raw) return jsonResponse(out.__raw); // 测试要指定 finish_reason 等原始字段时用
       return jsonResponse({ choices: [{ message: { content: out } }] });
     }
     const action = String(url).split("/").pop();

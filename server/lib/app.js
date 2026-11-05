@@ -13,7 +13,7 @@ const { FACE_NAMES_FOR_PROMPT } = require("./qqfaces");
 const { PRESETS, presetOf } = require("./presets");
 const { friendlyError } = require("./llm");
 
-const VERSION = "4.7.0";
+const VERSION = "4.8.0";
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -26,7 +26,7 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
-function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, personas = null, now = Date.now }) {
+function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, personas = null, reminders = null, now = Date.now }) {
   const webDir = path.join(root, "web");
   let server;
   const guard = createLocalGuard({
@@ -48,6 +48,11 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       stickers: { enabled: config.stickers.enabled, count: stickers ? stickers.count() : 0 },
       search: { enabled: config.search.enabled, ...(search ? search.stats() : {}) },
     };
+  }
+
+  /** 网页传来的角色 id → 会话 id；没传或者角色不在了就是主好友 */
+  function sessionFor(pid) {
+    return pid && personas && personas.get(pid) ? personas.sessionOf(pid) : "main";
   }
 
   /** 网页提交的「模型草稿」：Key 留空时沿用已保存的同 id 那一项 */
@@ -174,7 +179,7 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
     "GET /api/history": async (req, url) => {
       const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit")) || 100));
       const pid = url.searchParams.get("persona");
-      const h = memory.history(pid && personas && personas.get(pid) ? personas.sessionOf(pid) : "main", limit);
+      const h = memory.history(sessionFor(pid), limit);
       return { ok: true, total: h.total, messages: h.messages.map((m) => ({ role: m.role, text: facesToText(m.text), ts: m.ts })) };
     },
     "DELETE /api/history": async () => {
@@ -233,10 +238,32 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       const b = await readJsonBody(req);
       return { ok: personas.remove(b.id) };
     },
+    // 提醒：列表、手动添加、删除（聊天里说的由 brain 记下）
+    "GET /api/reminders": async () => ({ ok: true, list: reminders.all() }),
+    "POST /api/reminders": async (req) => {
+      const b = await readJsonBody(req);
+      if (b.op === "remove") return { ok: reminders.remove(b.id), list: reminders.all() };
+      if (b.op !== "add") return { status: 400, body: { ok: false, error: "不认识的操作" } };
+      const r = reminders.add({ spec: String(b.spec || ""), text: String(b.text || "") });
+      if (!r) return { status: 400, body: { ok: false, error: "时间不对，或者已经过了。内容也不能空" } };
+      return { ok: true, reminder: r, list: reminders.all() };
+    },
+    // 聊天页点了「不像你」：写成一条说话规矩
+    "POST /api/rules/feedback": async (req) => {
+      const b = await readJsonBody(req);
+      const rule = await brain.learnRule(sessionFor(b.persona), { text: b.text, note: b.note });
+      return { ok: true, rule };
+    },
     "POST /api/memory": async (req) => {
       const b = await readJsonBody(req);
-      const id = "main";
+      const id = sessionFor(b.persona);
       switch (b.op) {
+        case "addRule":
+          memory.applyOps(id, { addRules: [String(b.text || "")] });
+          break;
+        case "removeRule":
+          memory.applyOps(id, { removeRules: [String(b.text || "")] });
+          break;
         case "addFact":
           memory.applyOps(id, { add: [String(b.text || "")] });
           break;

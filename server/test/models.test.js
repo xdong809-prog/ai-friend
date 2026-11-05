@@ -164,3 +164,42 @@ test("风格：外国人风趣风格带示范对话；语言选项生效", async
   assert.ok(styles.some((x) => x.id === "yankee" && x.group === "风趣外国人"));
   await s.close();
 });
+
+// ---------- 推理模型把字数用在思考上 ----------
+
+/** 假的推理模型：给的字数不到 need 就只有思考、没有正文 */
+function thinkingModel(need, text = "〔想〕嗯\n〔心情〕平静\n好呀") {
+  return (u, body) => {
+    if (String(body.messages[0].content).includes("记忆整理")) return reply("{}");
+    if (body.max_tokens < need) return json({ choices: [{ message: { content: "", reasoning_content: "想了很久……" }, finish_reason: "length" }] });
+    return reply(text);
+  };
+}
+
+test("字数被思考用完：同一个模型加大字数再答一次，不换备用模型；之后直接用够的字数", async () => {
+  const net = multiNet({ "https://api.deepseek.com": thinkingModel(3000), "https://api.moonshot.cn": chatOrMemory("〔想〕嗯\n〔心情〕平静\n备用模型") });
+  const s = await start({ config: { ...TWO, llm: { ...TWO.llm, maxTokens: 1000 } }, net });
+  const r = await s.api("POST", "/api/chat", { text: "在吗" });
+  assert.deepEqual(r.json.bubbles, ["好呀"]);
+  const ds = () => net.calls.filter((c) => c.url.startsWith("https://api.deepseek.com") && !String(c.body.messages[0].content).includes("记忆整理"));
+  assert.deepEqual(ds().map((c) => c.body.max_tokens), [1000, 3000]);
+  assert.equal(net.calls.filter((c) => c.url.startsWith("https://api.moonshot.cn")).length, 0);
+
+  await s.api("POST", "/api/chat", { text: "今天好累" });
+  assert.deepEqual(ds().map((c) => c.body.max_tokens), [1000, 3000, 3000]);
+  await s.close();
+});
+
+test("加了字数还是空的，才换备用模型；和字数无关的空回复直接换，不白白多试", async () => {
+  const stubborn = multiNet({ "https://api.deepseek.com": thinkingModel(99999), "https://api.moonshot.cn": chatOrMemory("〔想〕嗯\n〔心情〕平静\n备用模型") });
+  const a = await start({ config: { ...TWO, llm: { ...TWO.llm, maxTokens: 1000 } }, net: stubborn });
+  assert.deepEqual((await a.api("POST", "/api/chat", { text: "在吗" })).json.bubbles, ["备用模型"]);
+  await a.close();
+
+  const empty = (u, body) => (String(body.messages[0].content).includes("记忆整理") ? reply("{}") : json({ choices: [{ message: { content: "" }, finish_reason: "stop" }] }));
+  const net = multiNet({ "https://api.deepseek.com": empty, "https://api.moonshot.cn": chatOrMemory("〔想〕嗯\n〔心情〕平静\n备用模型") });
+  const b = await start({ config: TWO, net });
+  assert.deepEqual((await b.api("POST", "/api/chat", { text: "在吗" })).json.bubbles, ["备用模型"]);
+  assert.equal(net.calls.filter((c) => c.url.startsWith("https://api.deepseek.com")).length, 1);
+  await b.close();
+});

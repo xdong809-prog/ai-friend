@@ -21,6 +21,7 @@ const MAX_CACHE = 4000;
 const MAX_FACTS = 80;
 const MAX_BASICS = 24;
 const MAX_EVENTS = 40;
+const MAX_RULES = 20;
 
 function norm(s) {
   return String(s || "").toLowerCase().replace(/[\s，。,.!！?？、~～"'“”‘’：:；;（）()【】\[\]-]/g, "");
@@ -47,7 +48,7 @@ function similar(a, b) {
 }
 
 function emptyProfile() {
-  return { version: 2, basics: {}, facts: [], events: [], summary: "", summarizedUpTo: 0, extractedUpTo: 0, updatedAt: 0 };
+  return { version: 2, basics: {}, facts: [], events: [], rules: [], summary: "", summarizedUpTo: 0, extractedUpTo: 0, updatedAt: 0 };
 }
 
 /**
@@ -176,6 +177,7 @@ function createMemory({ dataDir, config, log, now = Date.now, namesFor = () => n
     if (!out.basics || typeof out.basics !== "object" || Array.isArray(out.basics)) out.basics = {};
     if (!Array.isArray(out.facts)) out.facts = [];
     if (!Array.isArray(out.events)) out.events = [];
+    if (!Array.isArray(out.rules)) out.rules = [];
     out.facts = out.facts.map((f) => (typeof f === "string" ? { text: f, at: 0 } : f)).filter((f) => f && f.text);
     return out;
   }
@@ -276,6 +278,23 @@ function createMemory({ dataDir, config, log, now = Date.now, namesFor = () => n
       const before = p.events.length;
       p.events = p.events.filter((e) => !ops.removeEvents.includes(e.id));
       if (p.events.length !== before) changed = true;
+    }
+    // 说话规矩：对方教它的，说法相近的算同一条（留新说法），最多留最近的 MAX_RULES 条
+    if (Array.isArray(ops.addRules)) {
+      for (const raw of ops.addRules) {
+        const text = String(raw || "").replace(/\s+/g, " ").trim().slice(0, 60);
+        if (text.length < 2) continue;
+        p.rules = p.rules.filter((r) => !similar(r.text, text));
+        p.rules.push({ text, at: t });
+        log.info("记下说话规矩：" + text);
+        changed = true;
+      }
+      if (p.rules.length > MAX_RULES) p.rules = p.rules.slice(-MAX_RULES);
+    }
+    if (Array.isArray(ops.removeRules)) {
+      const before = p.rules.length;
+      p.rules = p.rules.filter((r) => !ops.removeRules.includes(r.text));
+      if (p.rules.length !== before) changed = true;
     }
     // 过期太久的安排清掉：完成的留 7 天，没完成的过期 30 天
     p.events = p.events

@@ -607,7 +607,8 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
     if (!owner) return false;
     const result = await brain.proactive("main", o);
     if (!result) return false;
-    await sendBubbles({ kind: "private", id: owner }, result);
+    const sent = await sendBubbles({ kind: "private", id: owner }, result);
+    if (!sent) return false;
     log.info("主动给主人发了消息：" + result.bubbles.join(" / "));
     return true;
   }

@@ -23,6 +23,11 @@ const TAG_RE = (words) => new RegExp(`^[*\\s]*[〔【\\[(（]\\s*(?:${words})\\s
 const THOUGHT_RE = TAG_RE("想|内心|心里|思考|内心活动");
 const MOOD_RE = TAG_RE("心情|情绪|状态");
 const SEARCH_RE = TAG_RE("搜索|联网搜索|查");
+// 这几个只认〔〕【】：普通消息里写个「（提醒）」不能被吃掉
+const MARK_RE = (words) => new RegExp(`^[*\\s]*[〔【]\\s*(?:${words})\\s*[〕】]\\s*[:：]?\\s*(.*)$`);
+const REMIND_RE = MARK_RE("提醒");
+const CANCEL_RE = MARK_RE("取消提醒");
+const RULE_RE = MARK_RE("规矩");
 const STICKER_RE = /\[表情包\s*[:：]\s*([^\]\n]{1,12})\]/g;
 /** 单独一条、只是在「表态收到」的客服式回复，有别的内容时直接去掉 */
 const ACK_ONLY_RE = /^(?:明白|收到|了解|好的|知道了|我知道了)(?:了|啦|啊)?[，,。.!！~～]*$/;
@@ -57,15 +62,16 @@ function stripQuotes(s) {
 
 /**
  * 解析模型原始输出。
- * @returns {{thought:string, mood:string, lines:string[], search:string}}
+ * @returns {{thought:string, mood:string, lines:string[], search:string, marks:{reminders:string[], cancels:string[], rules:string[]}}}
  */
 function parseOutput(raw, { selfName = "" } = {}) {
   let thought = "";
   let mood = "";
   let search = "";
   const lines = [];
+  const marks = { reminders: [], cancels: [], rules: [] };
   // 模型偶尔把几个标记写在同一行，先拆开
-  const text = String(raw || "").replace(/(?!^)\s*([〔【](?:想|心情|情绪|搜索)[〕】])/g, "\n$1");
+  const text = String(raw || "").replace(/(?!^)\s*([〔【](?:想|心情|情绪|搜索|提醒|取消提醒|规矩)[〕】])/g, "\n$1");
   for (const rawLine of text.split(/\r?\n/)) {
     let t = rawLine.trim();
     if (!t) continue;
@@ -86,13 +92,25 @@ function parseOutput(raw, { selfName = "" } = {}) {
       search = m[1].replace(/[「」“”"]/g, "").trim().slice(0, 60);
       continue;
     }
+    if ((m = t.match(CANCEL_RE))) {
+      if (m[1].trim()) marks.cancels.push(m[1].trim());
+      continue;
+    }
+    if ((m = t.match(REMIND_RE))) {
+      if (m[1].trim()) marks.reminders.push(m[1].trim());
+      continue;
+    }
+    if ((m = t.match(RULE_RE))) {
+      if (m[1].trim()) marks.rules.push(m[1].trim());
+      continue;
+    }
     if (/^〔[^〕]*〕/.test(t)) continue; // 其他内部标记，不外发
     t = stripMarkdown(t);
     if (selfName && (t.startsWith(selfName + "：") || t.startsWith(selfName + ":"))) t = t.slice(selfName.length + 1).trim();
     t = stripQuotes(t);
     if (t) lines.push(t);
   }
-  return { thought, mood: mood || "平静", lines, search };
+  return { thought, mood: mood || "平静", lines, search, marks };
 }
 
 function removeAiTone(lines) {

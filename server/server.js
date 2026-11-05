@@ -18,8 +18,11 @@ const { createStickers } = require("./lib/stickers");
 const { createSearch } = require("./lib/search");
 const { createGroupDigest } = require("./lib/groupdigest");
 const { createPersonas } = require("./lib/personas");
+const { createReminders, lastAt, whenText } = require("./lib/reminders");
 const { createApp, VERSION } = require("./lib/app");
-const { ymd } = require("./lib/util");
+const { ymd, fmtGap } = require("./lib/util");
+
+const REMINDER_LATE_LIMIT_MS = 12 * 3600 * 1000;
 
 const ROOT = path.resolve(__dirname, "..");
 const HOST = "127.0.0.1";
@@ -39,10 +42,33 @@ function rotateLog(dataDir) {
  *   /模型 2        换成第 2 个；也可以写名字的一部分，比如「/模型 kimi」
  *   /压缩          压缩聊天记录
  *   /群总结        马上总结勾选的群（要先在网页「群聊总结」页打开）
+ *   /提醒          看现在有哪些提醒
+ *   /规矩          看你教过它的说话规矩；「/规矩 少用问句」加一条；「/规矩 删 2」删第 2 条
  */
-function createCommands({ root, config, llm, log, env, compressJob = null, digest = null }) {
+function createCommands({ root, config, llm, log, env, compressJob = null, digest = null, memory = null, reminders = null }) {
   const { savePatch, replaceInPlace } = require("./lib/config");
   function handle(text) {
+    const said = String(text || "").trim();
+    if (reminders && /^[\/／]\s*提醒\s*$/.test(said)) {
+      const rows = reminders.active();
+      if (!rows.length) return "现在没有提醒。跟我说「明早 8 点叫我」这样就行";
+      return `现在的提醒：\n${rows.map((r, i) => `${i + 1}. ${r.when} ${r.text}`).join("\n")}\n\n想取消直接跟我说，或者去网页「记忆」页删`;
+    }
+    const ruleCmd = memory && /^[\/／]\s*规矩\s*(.*)$/.exec(said);
+    if (ruleCmd) {
+      const arg = ruleCmd[1].trim();
+      const rules = memory.getProfile("main").rules;
+      if (!arg) return rules.length ? `你教过我的规矩：\n${rules.map((r, i) => `${i + 1}. ${r.text}`).join("\n")}\n\n发「/规矩 删 2」删掉第 2 条` : "还没有规矩。发「/规矩 少用问句结尾」加一条，或者直接跟我说哪里不喜欢";
+      const del = /^(?:删|删除)\s*(\d+)$/.exec(arg);
+      if (del) {
+        const item = rules[Number(del[1]) - 1];
+        if (!item) return `没有第 ${del[1]} 条`;
+        memory.applyOps("main", { removeRules: [item.text] });
+        return `删掉了：${item.text}`;
+      }
+      memory.applyOps("main", { addRules: [arg] });
+      return `记下了：${arg.slice(0, 60)}`;
+    }
     if (digest && /^[\/／]\s*(?:群总结|群聊总结)\s*$/.test(String(text || "").trim())) {
       const g = config.groupDigest;
       if (!g.enabled || !g.groups.length) return "还没开启群聊总结：打开网页「群聊总结」页，打开开关并勾选要总结的群";
@@ -97,7 +123,8 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   const vision = createVision({ config, llm, dataDir, log, fetch, now });
   const stickers = createStickers({ config, dataDir, vision, log, random, now });
   const search = createSearch({ config, log, fetch, now });
-  const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, now, random });
+  const reminders = createReminders({ dataDir, log, now });
+  const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, reminders, now, random });
   const compressJob = createCompressJob({ memory, llm, log, now });
   const personas = createPersonas({ config, dataDir, memory, llm, log, now });
   // onebot 和 watchdog 在下面才建好；这两个函数只在之后被调用
@@ -111,12 +138,63 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
     deliver: (text) => onebot.sendToOwner(text),
     listGroups: async () => (await onebot.callApi("get_group_list", {})).data || [],
   });
-  const commands = createCommands({ root, config, llm, log, env, compressJob, digest });
+  const commands = createCommands({ root, config, llm, log, env, compressJob, digest, memory, reminders });
   const onebot = createOneBot({ config, brain, log, vision, stickers, commands, digest, fetch, now, random, sleep });
   const notify = createNotifier({ config, log, fetch });
   const watchdog = createWatchdog({ config, onebot, notify, log, now });
-  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, now });
-  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, app };
+  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, reminders, now });
+  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, reminders, app };
+}
+
+/**
+ * 提醒：到点就按好友的口吻发消息；模型出问题就发纯文字，保证一定发出去。
+ * QQ 掉线时先留着，回来了再补。一次性提醒过了 12 小时算错过；重复提醒只补最近一次，太久的直接排下一次。
+ * @returns {Promise<number>} 这次发出去几条
+ */
+async function checkReminders({ config, reminders, onebot, memory, watchdog, log }, t = Date.now()) {
+  if (!config.qq.enabled || !config.owner.qq.length) return 0;
+  let sent = 0;
+  for (const r of reminders.due(t)) {
+    const late = t - (r.repeat ? lastAt(r.repeat, t) : r.at);
+    if (late > REMINDER_LATE_LIMIT_MS) {
+      if (r.repeat) reminders.reschedule(r.id, t);
+      else reminders.markMissed(r.id, t);
+      continue;
+    }
+    if (watchdog.status().online === false) continue;
+    reminders.begin(r.id);
+    try {
+      const lateNote = late > 3 * 60000 ? `本来应该 ${whenText(r)} 提醒的，现在晚了 ${fmtGap(late)}，顺口说一声。` : "";
+      const note = `现在到点了，你之前答应要提醒对方：「${r.text}」。${lateNote}发 1~2 条消息把这件事说清楚，像朋友那样自然。`;
+      let ok = false;
+      if (!r.attempts) {
+        try {
+          ok = await onebot.sendProactive({ note });
+        } catch (e) {
+          log.warn("提醒用模型写失败，改发纯文字：" + (e.friendly || e.message));
+        }
+      }
+      if (!ok) {
+        const text = `到点啦：${r.text}`;
+        ok = await onebot.sendToOwner(text);
+        if (ok) memory.append("main", { role: "assistant", text, ts: t });
+      }
+      if (ok) {
+        reminders.markFired(r.id, t);
+        sent++;
+      } else reminders.markFailed(r.id, t);
+    } finally {
+      reminders.end(r.id);
+    }
+  }
+  return sent;
+}
+
+function startReminders(ctx) {
+  const timer = setInterval(() => {
+    checkReminders(ctx).catch((e) => ctx.log.warn("发提醒失败：" + e.message));
+  }, 20 * 1000);
+  if (timer.unref) timer.unref();
 }
 
 /**
@@ -245,6 +323,7 @@ function main() {
       startProactive(ctx);
       startFollowUp(ctx);
       startGroupDigest(ctx);
+      startReminders(ctx);
     }
   });
 
@@ -264,4 +343,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { build, checkFollowUp, checkGroupDigest, ROOT, HOST };
+module.exports = { build, checkFollowUp, checkGroupDigest, checkReminders, ROOT, HOST };

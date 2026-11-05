@@ -21,7 +21,7 @@ const { detectSearchIntent } = require("./search");
 const GAP_NOTE_MS = 60 * 60 * 1000; // 两条消息隔超过 1 小时，就在上下文里标出来
 const RAW_LOG_MAX = 2 * 1024 * 1024;
 
-function createBrain({ config, memory, llm, dataDir, log, stickers = null, search = null, now = Date.now, random = Math.random }) {
+function createBrain({ config, memory, llm, dataDir, log, stickers = null, search = null, reminders = null, now = Date.now, random = Math.random }) {
   const stateDir = path.join(dataDir, "state");
   ensureDir(stateDir);
   const rawLog = path.join(dataDir, "logs", "llm-raw.jsonl");
@@ -59,6 +59,9 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     return {
       stickers: Boolean(stickers && config.stickers.enabled && stickers.count() > 0),
       search: Boolean(search && config.search.enabled && config.search.sources.length),
+      // 提醒靠 QQ 发出去：QQ 没开或没设主人时，不能让它答应
+      reminders: Boolean(reminders && config.qq.enabled && config.owner.qq.length),
+      rules: true,
     };
   }
 
@@ -156,7 +159,54 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     if (late && config.humanize.enabled && config.humanize.typingDelay && inputText) {
       p.firstDelayMs = Math.min(Math.round(config.humanize.maxReplyDelayMs * 1.6), p.firstDelayMs + 1000 + Math.round(random() * 3000));
     }
-    return { parts, thought: parsed.thought, mood: parsed.mood, search: parsed.search, ...p };
+    return { parts, thought: parsed.thought, mood: parsed.mood, search: parsed.search, marks: parsed.marks, ...p };
+  }
+
+  /**
+   * 回复里的〔提醒〕〔取消提醒〕〔规矩〕，确定要发这一版了才生效（被新消息打断的草稿不算数）。
+   * 提醒的时间看不懂时，它已经嘴上答应了，所以补一句实话，让对方再说一次。
+   */
+  function applyMarks(sessionId, result, ab) {
+    const m = result.marks;
+    if (!m) return;
+    if (ab.reminders) {
+      for (const kw of m.cancels) reminders.cancel(kw);
+      const bad = m.reminders.filter((line) => !reminders.addLine(line));
+      if (bad.length) {
+        log.warn("提醒的时间看不懂，没记下来：" + bad.join("；"));
+        result.parts.push({ type: "text", text: "（刚才那个提醒的时间我没记下来，再跟我说一次具体几点）" });
+      }
+    }
+    if (ab.rules && m.rules.length) memory.applyOps(sessionId, { addRules: m.rules });
+  }
+
+  /**
+   * 网页上点了「不像你」：把这句话和对方的意见写成一条说话规矩，记进这个会话的档案。
+   * 模型不可用时，直接用对方写的原因；两样都没有就报错。
+   */
+  async function learnRule(sessionId, { text = "", note = "" } = {}) {
+    const said = String(text).trim().slice(0, 200);
+    const why = String(note).trim().slice(0, 200);
+    let rule = "";
+    if (llm.enabled("memory")) {
+      try {
+        const raw = await llm.chat(
+          [
+            { role: "system", content: "你在帮一个 AI 好友改说话方式：把对方的不满写成一条它以后要遵守的说话规矩。只输出规矩本身，不超过 25 字，写具体、能照做的做法，不要解释。" },
+            { role: "user", content: `它说了这句话，对方觉得不像它：「${said}」\n对方的意见：${why || "（没写原因，你来判断哪里不对）"}` },
+          ],
+          { use: "memory", temperature: 0.2, maxTokens: 200 }
+        );
+        rule = String(raw).split(/\r?\n/).map((s) => s.trim()).find(Boolean) || "";
+        rule = rule.replace(/^(?:规矩|说话规矩)[:：]\s*/, "").replace(/^[「“"]|[」”"]$/g, "");
+      } catch (e) {
+        log.warn("写说话规矩失败：" + (e.friendly || e.message));
+      }
+    }
+    rule = rule || why;
+    if (!rule) throw Object.assign(new Error("现在没有可用的大模型，写一下哪里不像它吧"), { status: 400 });
+    memory.applyOps(sessionId, { addRules: [rule] });
+    return rule.slice(0, 60);
   }
 
   /**
@@ -192,6 +242,8 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     const prevAt = Math.max(st.lastUserAt || 0, st.lastReplyAt || 0, (lastMsg && lastMsg.ts) || 0);
     const gapMs = prevAt ? startedAt - prevAt : 0;
     const ab = abilities();
+    if (isGroup || persona) ab.reminders = false; // 只有和主好友私聊时能定提醒
+    if (isGroup) ab.rules = false;
 
     const notes = [...extraNotes];
     let history;
@@ -240,11 +292,12 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       if (intent.should) searched = await search.search(intent.query);
     }
 
-    const staticPrompt = buildStaticPrompt({ config, isGroup, friend: persona || undefined, abilities: { ...ab, search: ab.search && !searched } });
+    const staticPrompt = buildStaticPrompt({ config, isGroup, friend: persona || undefined, rules: isGroup ? [] : memory.getProfile(sessionId).rules, abilities: { ...ab, search: ab.search && !searched } });
     const chat = toChatMessages(history, { isGroup });
     const dynamicFor = (extra) =>
       buildDynamicPrompt({
         memoryBlock,
+        reminders: ab.reminders ? reminders.block() : "",
         summary,
         relevant,
         stateBlock: stateBlock(st, startedAt, gapMs, history, { life: !persona }),
@@ -281,6 +334,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     }
     if (searched) result.searchInfo = { query: searched.query, engine: searched.engine, results: searched.results.map((r) => ({ title: r.title, url: r.url, site: r.site })) };
     if (beforeCommit && !(await beforeCommit(result))) return { stale: true };
+    applyMarks(sessionId, result, ab);
     const out = commit(sessionId, result, { st, isGroup, engine });
     if (!isGroup && engine === "llm") background(sessionId);
     return out;
@@ -329,7 +383,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       const r = memory.recent(sessionId);
       const ab = { ...abilities(), search: false };
       const messages = assemble(
-        buildStaticPrompt({ config, abilities: ab }),
+        buildStaticPrompt({ config, rules: memory.getProfile(sessionId).rules, abilities: ab }),
         [...toChatMessages(r.messages, { isGroup: false }), { role: "user", content: "（系统提示：现在轮到你主动发消息，请直接按格式输出）" }],
         buildDynamicPrompt({
           memoryBlock: memory.memoryBlock(sessionId, userCall()),
@@ -351,7 +405,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     });
   }
 
-  return { reply, proactive, getState, toChatMessages, abilities };
+  return { reply, proactive, learnRule, getState, toChatMessages, abilities };
 }
 
 module.exports = { createBrain };

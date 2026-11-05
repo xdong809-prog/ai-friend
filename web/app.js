@@ -73,9 +73,33 @@
     maybeTime(ts || Date.now());
     const sticker = /^\[表情包:([^\]]+)\]$/.exec(String(text));
     const m = sticker ? el("div", "msg " + role + " sticker-tag", "【表情包：" + sticker[1] + "】") : el("div", "msg " + role, withEmoji(text));
+    if (role === "assistant" && !sticker) m.appendChild(unlikeButton(text));
     box.appendChild(m);
     box.scrollTop = box.scrollHeight;
     return m;
+  }
+  // 「不像你」：把这句话和你的意见写成一条说话规矩，以后每次回复都遵守
+  function unlikeButton(text) {
+    const b = el("button", "unlike", "不像你");
+    b.type = "button";
+    b.title = "告诉它这句不像它，它会记成一条说话规矩";
+    b.addEventListener("click", async () => {
+      const note = prompt("哪里不像它？（可以不写，让它自己琢磨）", "");
+      if (note === null) return;
+      b.disabled = true;
+      b.textContent = "…";
+      try {
+        const r = await api("POST", "/api/rules/feedback", { text, note, persona: chatWith || undefined });
+        b.remove();
+        box.appendChild(el("div", "time", "记下规矩了：" + r.rule));
+        box.scrollTop = box.scrollHeight;
+      } catch (e) {
+        b.disabled = false;
+        b.textContent = "不像你";
+        box.appendChild(el("div", "time", "没记下来：" + e.message));
+      }
+    });
+    return b;
   }
   function addSticker(role, url, keyword) {
     maybeTime(Date.now());
@@ -242,9 +266,73 @@
       if (e.done) f.append(el("span", "tag", "已聊过"));
       events.appendChild(li(f, () => memOp({ op: "removeEvent", id: e.id })));
     }
+    const rules = $("#rules");
+    rules.innerHTML = "";
+    if (!(p.rules || []).length) rules.appendChild(el("li", "muted", "还没有"));
+    for (const r of p.rules || []) rules.appendChild(li(r.text, () => memOp({ op: "removeRule", text: r.text })));
+    $("#ruleCount").textContent = (p.rules || []).length ? p.rules.length + " 条" : "";
     $("#summary").value = p.summary || "";
     $("#summaryInfo").textContent = p.summarizedUpTo ? "已压缩前 " + p.summarizedUpTo + " 条" : "";
   }
+
+  // ---------- 提醒 ----------
+  function renderReminders(list) {
+    const ul = $("#reminders");
+    ul.innerHTML = "";
+    const waiting = list.filter((r) => r.status === "active");
+    $("#reminderInfo").textContent = waiting.length ? waiting.length + " 个等着" : "";
+    if (!list.length) ul.appendChild(el("li", "muted", "还没有"));
+    for (const r of list) {
+      const f = document.createDocumentFragment();
+      f.append(el("b", "", r.when), document.createTextNode(r.text));
+      if (r.status === "done") f.append(el("span", "tag", "已提醒"));
+      if (r.status === "missed") f.append(el("span", "tag", "错过了"));
+      ul.appendChild(
+        li(f, async () => {
+          const res = await api("POST", "/api/reminders", { op: "remove", id: r.id });
+          renderReminders(res.list);
+        })
+      );
+    }
+  }
+  async function loadReminders() {
+    try {
+      renderReminders((await api("GET", "/api/reminders")).list);
+    } catch (e) {
+      $("#reminderMsg").textContent = "读取失败：" + e.message;
+    }
+  }
+  function syncReminderForm() {
+    $("#remDate").hidden = $("#remRepeat").value !== "once";
+  }
+  $("#remRepeat").addEventListener("change", syncReminderForm);
+  $("#reminderForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const repeat = $("#remRepeat").value;
+    const time = $("#remTime").value;
+    const text = $("#remText").value.trim();
+    const msg = $("#reminderMsg");
+    msg.textContent = "";
+    if (!text || !time) return;
+    if (repeat === "once" && !$("#remDate").value) {
+      msg.textContent = "选一下日期";
+      return;
+    }
+    try {
+      const r = await api("POST", "/api/reminders", { op: "add", spec: (repeat === "once" ? $("#remDate").value : repeat) + " " + time, text });
+      $("#remText").value = "";
+      renderReminders(r.list);
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
+  syncReminderForm();
+  $("#ruleForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = $("#ruleText").value.trim();
+    if (!text) return;
+    memOp({ op: "addRule", text }).then(() => ($("#ruleText").value = ""));
+  });
   async function loadMemory() {
     try {
       const r = await api("GET", "/api/memory");
@@ -253,6 +341,7 @@
       $("#historyInfo").textContent = "共 " + h.total + " 条";
       loadStickers();
       loadCompress();
+      loadReminders();
     } catch (e) {
       alert(e.message);
     }
@@ -993,6 +1082,18 @@
       field("补充设定（比如：别提某件事）", "customPrompt", 1500, true);
       if (p.selfFacts && p.selfFacts.length) det.appendChild(el("p", "", "关于他/她自己：\n" + p.selfFacts.join("\n")));
       if (p.summary) det.appendChild(el("p", "", "你们的回忆：\n" + p.summary));
+      if (p.rules && p.rules.length) {
+        det.appendChild(el("p", "", "你教它的说话规矩："));
+        const rulesUl = el("ul", "list");
+        for (const r of p.rules) {
+          const item = li(r.text, async () => {
+            await api("POST", "/api/memory", { op: "removeRule", text: r.text, persona: p.id });
+            item.remove();
+          });
+          rulesUl.appendChild(item);
+        }
+        det.appendChild(rulesUl);
+      }
       const row = el("div", "row end");
       const msg = el("span", "muted");
       const save = el("button", "", "保存设定");

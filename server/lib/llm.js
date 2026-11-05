@@ -5,10 +5,13 @@
  *   - 聊天模型失败时自动换「备用模型」；
  *   - 自动适配各家的小差异：不接受 temperature（Claude 新模型）、要用 max_completion_tokens（部分 GPT）、
  *     不支持 JSON 模式……遇到对应报错会调整参数重试一次，并记住，下次直接用对的参数；
- *   - 自动去掉推理模型输出里的 <think>…</think>；
+ *   - 自动去掉推理模型输出里的 <think>…</think>；字数被思考用完返回空内容时，加大字数再试一次；
  *   - 记录 DeepSeek 等的前缀缓存命中量。
  */
 const { presetOf, isLocalUrl } = require("./presets");
+
+const MIN_THINKING_BUDGET = 3000; // 推理模型字数不够时，至少加到这么多
+const MAX_BUDGET = 8000;
 
 function friendlyError(err) {
   if (!err) return "未知错误";
@@ -40,6 +43,9 @@ function createLLM({ config, log, fetch = globalThis.fetch }) {
   const stats = { ok: 0, fail: 0, lastError: "", lastOkAt: 0, lastMs: 0, lastModel: "", promptTokens: 0, cacheHitTokens: 0, completionTokens: 0 };
   /** 运行中学到的「这家不认某个参数」 */
   const quirks = new Map();
+  /** 运行中学到的「这个模型至少要给多少字数」（推理模型思考也算字数） */
+  const budgets = new Map();
+  const budgetKey = (provider, model) => `${provider.id}:${model}`;
 
   function providerById(id) {
     return config.providers.find((p) => p.id === id) || null;
@@ -83,8 +89,9 @@ function createLLM({ config, log, fetch = globalThis.fetch }) {
     const q = quirks.get(provider.id) || {};
     const body = { model, messages, stream: false };
     if (!provider.noTemperature && !q.noTemperature && o.temperature !== undefined) body.temperature = o.temperature;
-    if (q.maxCompletion) body.max_completion_tokens = o.maxTokens;
-    else body.max_tokens = o.maxTokens;
+    const maxTokens = Math.max(o.maxTokens, budgets.get(budgetKey(provider, model)) || 0);
+    if (q.maxCompletion) body.max_completion_tokens = maxTokens;
+    else body.max_tokens = maxTokens;
     if (o.json && !q.noJson) body.response_format = { type: "json_object" };
     const headers = { "Content-Type": "application/json" };
     if (provider.apiKey) headers.Authorization = "Bearer " + provider.apiKey;
@@ -116,12 +123,29 @@ function createLLM({ config, log, fetch = globalThis.fetch }) {
     let content = (choice && choice.message && choice.message.content) || (choice && choice.text) || "";
     if (Array.isArray(content)) content = content.map((c) => (typeof c === "string" ? c : c.text || "")).join("");
     content = stripThink(content);
-    if (!content) throw new Error("大模型返回了空内容（推理模型可能把字数用在思考上了，可以调大「最长回复」）");
+    // 空回复也是收费的，先记账
     const u = data.usage || {};
     stats.promptTokens += Number(u.prompt_tokens) || 0;
     stats.cacheHitTokens += Number(u.prompt_cache_hit_tokens) || Number(u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
     stats.completionTokens += Number(u.completion_tokens) || 0;
+    if (!content) {
+      const err = new Error("大模型返回了空内容（推理模型可能把字数用在思考上了，可以调大「最长回复」）");
+      // 字数被思考用完了：加大字数再试就能答出来，不用换模型
+      err.outOfTokens = Boolean(choice && (choice.finish_reason === "length" || (choice.message && choice.message.reasoning_content)));
+      throw err;
+    }
     return content;
+  }
+
+  /** 推理模型把字数用在思考上时，给它加字数。记住这个数，之后这个模型直接用 */
+  function growBudget(provider, model, o) {
+    const key = budgetKey(provider, model);
+    const cur = Math.max(o.maxTokens, budgets.get(key) || 0);
+    if (cur >= MAX_BUDGET) return false;
+    const next = Math.min(MAX_BUDGET, Math.max(MIN_THINKING_BUDGET, cur * 3));
+    budgets.set(key, next);
+    log.info(`「${labelOf(provider, model)}」的字数被思考用完了，最长回复从 ${cur} 加到 ${next} 再试一次`);
+    return true;
   }
 
   /** 根据报错调整参数：返回 true 表示值得用新参数再试一次 */
@@ -154,11 +178,16 @@ function createLLM({ config, log, fetch = globalThis.fetch }) {
   }
 
   async function attempt(provider, model, messages, o) {
+    let grown = false;
     for (let i = 0; i < 3; i++) {
       try {
         return await once(provider, model, messages, o);
       } catch (err) {
         if (i < 2 && adapt(provider, err)) continue;
+        if (err.outOfTokens && !grown && growBudget(provider, model, o)) {
+          grown = true;
+          continue;
+        }
         if (i === 0 && transient(err)) {
           await new Promise((r) => setTimeout(r, 700));
           continue;

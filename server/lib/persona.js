@@ -172,6 +172,7 @@ function joinBlocks(blocks) {
  * @param {boolean} [p.isGroup]
  * @param {{stickers?:boolean, search?:boolean}} [p.abilities]  本次能用的能力
  * @param {object} [p.friend]  导入的角色（personas.friendFor）：代替 config.friend，人设来自真实聊天记录
+ * @param {{text:string}[]} [p.rules]  对方教过的说话规矩（memory 档案里的 rules）
  */
 function buildStaticPrompt(p) {
   const { config } = p;
@@ -189,6 +190,8 @@ function buildStaticPrompt(p) {
   const sample = style.examples && style.examples.length ? `【你说话的感觉】（${f.imported ? "都是你以前的原话，" : "示范，"}只学语气和节奏，不要照抄内容）\n${style.examples.join("\n")}` : "";
   const selfFacts = f.selfFacts && f.selfFacts.length ? `【你自己的情况】\n${f.selfFacts.map((x) => "- " + x).join("\n")}` : "";
   const identity = [who, `你的性格${f.imported ? "和说话方式" : ""}：${style.persona}`, lang ? `语言：${lang}` : "", f.customPrompt ? `补充设定（优先遵守）：${f.customPrompt}` : "", selfFacts, sample].filter(Boolean).join("\n");
+  // 对方亲口教的说话规矩：放在人设后面、优先于下面的通用规则。很少变，不影响前缀缓存
+  const rules = p.rules && p.rules.length ? `【对方教过你的说话规矩】（一定要遵守，优先于后面的通用规则；照做就行，不用提起）\n${p.rules.map((r) => "- " + r.text).join("\n")}` : "";
   // 导入的角色：以前的真实聊天就是它的记忆，要用、要一致，但不照抄
   const memories = f.imported
     ? `【你们以前的聊天】
@@ -240,9 +243,21 @@ function buildStaticPrompt(p) {
   if (ab.search) {
     formatLines.push("需要实时信息（天气、新闻、比分、价格、某个东西的最新消息）而你又不确定时，不要编：〔想〕〔心情〕之后只写一行 〔搜索〕关键词，然后停下。系统查完会把资料给你，你再正常回复。闲聊、问感受、问你自己的事都不要搜。");
   }
+  if (ab.reminders) {
+    formatLines.push(
+      "对方让你到点提醒、到点叫他（比如「明早 8 点叫我」「每天 11 点提醒我喝水」「半小时后喊我」）时，除了正常回话，再单独写一行：〔提醒〕时间｜要提醒的事。时间按【此刻】换算成 YYYY-MM-DD HH:MM；重复的写 每天 HH:MM、工作日 HH:MM、周末 HH:MM、每周一三 HH:MM。对方要取消时单独写一行：〔取消提醒〕关键词（全部取消就写「全部」）。到点时系统会让你发消息。没写这一行提醒就不会发生，所以没写就不要答应；时间说不清就先问清楚，别猜。"
+    );
+  } else {
+    formatLines.push("你在这里没有定时提醒的功能：对方让你到点叫他、提醒他时，要老实说做不到，不要答应。");
+  }
+  if (ab.rules) {
+    formatLines.push(
+      "对方明确说不喜欢你某种说话方式、要你以后改（比如「别老问我」「说话短点」「别叫我宝贝」「这句不像你」）时，再单独写一行：〔规矩〕以后要遵守的做法（不超过 25 字，写具体）。只是打闹、骂你，或者只针对这一次的要求，不要写。写了之后正常接话，别说「好的我记住了」。"
+    );
+  }
   formatLines.push("", "示例（只是格式示例，内容要按实际情况写）：", "〔想〕他嫌我笨，其实是在撒气，逗他一下", "〔心情〕委屈", "凶我干嘛", "我又不是故意的" + (ab.stickers ? "\n[表情包:委屈]" : ""));
 
-  return joinBlocks([identity, memories, speak, pushback, logic, media, formatLines.join("\n")]);
+  return joinBlocks([identity, rules, memories, speak, pushback, logic, media, formatLines.join("\n")]);
 }
 
 /**
@@ -250,7 +265,7 @@ function buildStaticPrompt(p) {
  * 作为第二条 system 消息，插在「之前的聊天」和「对方最新的消息」之间。
  */
 function buildDynamicPrompt(p) {
-  const blocks = [p.memoryBlock, p.summary ? `【更早的聊天摘要】\n${p.summary}` : "", p.relevant, p.stateBlock, p.note ? `【这一轮要注意】\n${p.note}` : ""];
+  const blocks = [p.memoryBlock, p.reminders, p.summary ? `【更早的聊天摘要】\n${p.summary}` : "", p.relevant, p.stateBlock, p.note ? `【这一轮要注意】\n${p.note}` : ""];
   return joinBlocks(blocks) + "\n\n（以上是背景信息。下面是对方最新发来的消息，请按输出格式回复。）";
 }
 
