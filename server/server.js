@@ -19,6 +19,9 @@ const { createSearch } = require("./lib/search");
 const { createGroupDigest } = require("./lib/groupdigest");
 const { createPersonas } = require("./lib/personas");
 const { createReminders, lastAt, whenText } = require("./lib/reminders");
+const { createLinkReader, httpGet } = require("./lib/linkreader");
+const { createUsage } = require("./lib/usage");
+const { applyPendingRestore } = require("./lib/backup");
 const { createApp, VERSION } = require("./lib/app");
 const { ymd, fmtGap } = require("./lib/util");
 
@@ -110,19 +113,21 @@ function createCommands({ root, config, llm, log, env, compressJob = null, diges
   return { handle };
 }
 
-function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.env, fetch = globalThis.fetch, silent = false, now, random, sleep } = {}) {
+function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.env, fetch = globalThis.fetch, silent = false, now, random, sleep, linkGet = httpGet } = {}) {
   const created = ensureConfigFile(root);
   const config = loadConfig(root, env);
   const logFile = !silent && process.stdout.isTTY ? path.join(dataDir, "logs", "server.log") : "";
   const log = createLogger({ silent, file: logFile, getSecrets: () => [...config.providers.map((p) => p.apiKey), config.llm.apiKey, config.qq.token, config.notify.webhook] });
   fs.mkdirSync(path.join(dataDir, "logs"), { recursive: true });
   if (created) log.info("第一次运行，已从 config.example.json 生成 config.json");
-  const llm = createLLM({ config, log, fetch });
+  const usage = createUsage({ dataDir, now });
+  const llm = createLLM({ config, log, fetch, usage });
   // personas 在下面才建好；namesFor 只在之后整理记忆时被调用
   const memory = createMemory({ dataDir, config, log, now, namesFor: (id) => personas.namesFor(id) });
   const vision = createVision({ config, llm, dataDir, log, fetch, now });
   const stickers = createStickers({ config, dataDir, vision, log, random, now });
   const search = createSearch({ config, log, fetch, now });
+  const links = createLinkReader({ config, log, now, get: linkGet });
   const reminders = createReminders({ dataDir, log, now });
   const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, reminders, now, random });
   const compressJob = createCompressJob({ memory, llm, log, now });
@@ -139,11 +144,11 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
     listGroups: async () => (await onebot.callApi("get_group_list", {})).data || [],
   });
   const commands = createCommands({ root, config, llm, log, env, compressJob, digest, memory, reminders });
-  const onebot = createOneBot({ config, brain, log, vision, stickers, commands, digest, fetch, now, random, sleep });
+  const onebot = createOneBot({ config, brain, log, vision, stickers, commands, digest, links, fetch, now, random, sleep });
   const notify = createNotifier({ config, log, fetch });
   const watchdog = createWatchdog({ config, onebot, notify, log, now });
-  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, reminders, now });
-  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, reminders, app };
+  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, reminders, links, usage, dataDir, now });
+  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, reminders, links, usage, app };
 }
 
 /**
@@ -289,6 +294,8 @@ function startProactive({ config, brain, onebot, log, watchdog }) {
 function main() {
   const dataDir = path.join(ROOT, "data");
   rotateLog(dataDir);
+  // 上次在网页上选了「恢复备份」的话，要赶在读任何数据之前换好
+  applyPendingRestore({ root: ROOT, dataDir, version: VERSION, log: { info: (m) => console.log(m), error: (m) => console.error(m) } });
   const ctx = build({ root: ROOT, dataDir });
   const { config, log, app, watchdog, llm } = ctx;
   const server = app.server;
@@ -334,6 +341,7 @@ function main() {
     log.info("正在关闭…");
     watchdog.stop();
     ctx.vision.flush();
+    ctx.usage.flush();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   };

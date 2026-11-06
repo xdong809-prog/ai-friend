@@ -39,7 +39,7 @@ function labelOf(p, model) {
   return model && model !== p.model ? `${p.name}（${model}）` : p.name;
 }
 
-function createLLM({ config, log, fetch = globalThis.fetch }) {
+function createLLM({ config, log, fetch = globalThis.fetch, usage = null }) {
   const stats = { ok: 0, fail: 0, lastError: "", lastOkAt: 0, lastMs: 0, lastModel: "", promptTokens: 0, cacheHitTokens: 0, completionTokens: 0 };
   /** 运行中学到的「这家不认某个参数」 */
   const quirks = new Map();
@@ -128,6 +128,7 @@ function createLLM({ config, log, fetch = globalThis.fetch }) {
     stats.promptTokens += Number(u.prompt_tokens) || 0;
     stats.cacheHitTokens += Number(u.prompt_cache_hit_tokens) || Number(u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
     stats.completionTokens += Number(u.completion_tokens) || 0;
+    if (usage) usage.record(provider, model, { prompt: Number(u.prompt_tokens) || 0, hit: Number(u.prompt_cache_hit_tokens) || Number(u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0, completion: Number(u.completion_tokens) || 0 });
     if (!content) {
       const err = new Error("大模型返回了空内容（推理模型可能把字数用在思考上了，可以调大「最长回复」）");
       // 字数被思考用完了：加大字数再试就能答出来，不用换模型
@@ -183,6 +184,7 @@ function createLLM({ config, log, fetch = globalThis.fetch }) {
       try {
         return await once(provider, model, messages, o);
       } catch (err) {
+        if (usage) usage.recordFail(provider, model);
         if (i < 2 && adapt(provider, err)) continue;
         if (err.outOfTokens && !grown && growBudget(provider, model, o)) {
           grown = true;

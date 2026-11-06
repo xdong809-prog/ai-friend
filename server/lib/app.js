@@ -12,8 +12,9 @@ const { facesToText } = require("./humanize");
 const { FACE_NAMES_FOR_PROMPT } = require("./qqfaces");
 const { PRESETS, presetOf } = require("./presets");
 const { friendlyError } = require("./llm");
+const { createBackup, backupFileName, stageRestore, pendingInfo, cancelRestore } = require("./backup");
 
-const VERSION = "4.8.0";
+const VERSION = "4.9.0";
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -26,7 +27,7 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
-function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, personas = null, reminders = null, now = Date.now }) {
+function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, dataDir = path.join(root, "data"), personas = null, reminders = null, links = null, usage = null, now = Date.now }) {
   const webDir = path.join(root, "web");
   let server;
   const guard = createLocalGuard({
@@ -151,7 +152,8 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       // 和导入的角色聊：用它自己的会话和人设
       const persona = body.persona && personas ? personas.friendFor(body.persona) : null;
       if (body.persona && !persona) return { status: 404, body: { ok: false, error: "这个角色不在了" } };
-      const r = await brain.reply({ sessionId: persona ? personas.sessionOf(body.persona) : "main", channel: "web", texts, persona });
+      const linkNote = links ? await links.noteFor(texts) : "";
+      const r = await brain.reply({ sessionId: persona ? personas.sessionOf(body.persona) : "main", channel: "web", texts, persona, extraNotes: linkNote ? [linkNote] : [] });
       return {
         ok: true,
         engine: r.engine,
@@ -237,6 +239,20 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
     "POST /api/personas/remove": async (req) => {
       const b = await readJsonBody(req);
       return { ok: personas.remove(b.id) };
+    },
+    "GET /api/usage": async () => ({ ok: true, ...usage.summary() }),
+    // 备份：下载走 handle() 里的特殊分支（要返回文件）；恢复先放好，重启才生效
+    "GET /api/backup/status": async () => ({ ok: true, pending: pendingInfo(dataDir) }),
+    "POST /api/backup/restore": async (req) => {
+      const buf = await readBody(req, { limit: 1024 * 1024 * 1024, timeoutMs: 180000, raw: true });
+      if (!buf.length) return { status: 400, body: { ok: false, error: "文件是空的" } };
+      const r = stageRestore(buf, { dataDir });
+      log.info(`备份已放好（${r.files} 个文件），重启后生效`);
+      return { ok: true, ...r, pending: pendingInfo(dataDir) };
+    },
+    "POST /api/backup/cancel": async () => {
+      cancelRestore(dataDir);
+      return { ok: true, pending: null };
     },
     // 提醒：列表、手动添加、删除（聊天里说的由 brain 记下）
     "GET /api/reminders": async () => ({ ok: true, list: reminders.all() }),
@@ -326,6 +342,12 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       return res.end();
+    }
+
+    if (pathname === "/api/backup" && req.method === "GET") {
+      const body = createBackup({ root, dataDir, version: VERSION, now });
+      res.writeHead(200, { "Content-Type": "application/gzip", "Content-Length": body.length, "Content-Disposition": `attachment; filename="${backupFileName(now())}"` });
+      return res.end(body);
     }
 
     const stickerMatch = /^\/api\/stickers\/([a-f0-9]{40})$/.exec(pathname);

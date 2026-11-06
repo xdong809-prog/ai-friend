@@ -19,9 +19,12 @@ const fs = require("node:fs");
 const { faceText } = require("./qqfaces");
 const { toSegments, mergeWait } = require("./humanize");
 const { sniffImage, sha1, readImageFile } = require("./vision");
+const { parseJsonCard, parseXmlCard, cardLabel } = require("./linkreader");
 
 const DEDUPE_MS = 10 * 60 * 1000;
 const GROUP_CONTEXT = 40;
+const FORWARD_MAX_MSGS = 40; // 合并转发最多看多少条
+const FORWARD_MAX_CHARS = 1500;
 const TYPING_HOLD_MS = 6000; // QQ 说对方正在输入：最多再等这么久（没收到「停止输入」也不会一直等）
 const TYPING_EXTRA_MAX_MS = 8000; // 准备发出去时对方还在打字：最多为此多等这么久
 const MAX_REDOS = 2; // 一轮里最多因为新消息重新想几次（防止一直重想、一直不回）
@@ -73,7 +76,29 @@ function normalizeSegments(message, raw) {
   return [];
 }
 
-function createOneBot({ config, brain, log, vision = null, stickers = null, commands = null, digest = null, fetch = globalThis.fetch, now = Date.now, random = Math.random, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+/** 转发里的一段 → 文字（不再往里看图、也不再展开嵌套的转发） */
+function forwardSegText(s) {
+  const d = s.data || {};
+  switch (s.type) {
+    case "text":
+      return String(d.text || "");
+    case "face":
+      return faceText(d.id);
+    case "image":
+    case "mface":
+      return Number(d.sub_type) === 1 || s.type === "mface" ? "[表情包]" : "[图片]";
+    case "record":
+      return "[语音]";
+    case "video":
+      return "[视频]";
+    case "forward":
+      return "[聊天记录]";
+    default:
+      return "";
+  }
+}
+
+function createOneBot({ config, brain, log, vision = null, stickers = null, commands = null, digest = null, links = null, fetch = globalThis.fetch, now = Date.now, random = Math.random, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const seen = new Map();
   const buffers = new Map();
   const typingUntil = new Map(); // 缓冲区 key → 对方「正在输入」到什么时候
@@ -119,10 +144,44 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
     return false;
   }
 
+  /** 合并转发 → 「[聊天记录：阿强：今晚谁打球 / 小美：我去]」。消息段里自带内容就用，否则问 NapCat（只在 allowFetch 时） */
+  async function readForward(d, allowFetch) {
+    let list = Array.isArray(d.content) ? d.content : null;
+    if (!list && allowFetch && d.id) {
+      try {
+        const r = await callApi("get_forward_msg", { message_id: String(d.id) });
+        list = (r.data && r.data.messages) || null;
+      } catch (e) {
+        log.debug("取合并转发失败：" + e.message);
+      }
+    }
+    if (!list || !list.length) return "[聊天记录]";
+    const rows = [];
+    let chars = 0;
+    for (const m of list.slice(0, FORWARD_MAX_MSGS)) {
+      const sender = m.sender || {};
+      const who = sender.card || sender.nickname || "有人";
+      const said = normalizeSegments(m.message || m.content, m.raw_message).map(forwardSegText).join("").replace(/\s+/g, " ").trim();
+      if (!said) continue;
+      const row = `${who}：${said}`;
+      if (chars + row.length > FORWARD_MAX_CHARS) break;
+      rows.push(row);
+      chars += row.length;
+    }
+    if (!rows.length) return "[聊天记录]";
+    const more = list.length - rows.length;
+    return `[聊天记录：${rows.join(" / ")}${more > 0 ? `（后面还有 ${more} 条没看）` : ""}]`;
+  }
+
   /** 把消息段变成给模型看的文字；图片先放占位符，之后由 seeImages 换成「[图片：描述]」 */
-  async function readContent(segs, self, { fetchQuote = true } = {}) {
+  async function readContent(segs, self, { fetchQuote = true, fetchForward = false } = {}) {
     const parts = [];
     const images = [];
+    const linkUrls = [];
+    const addCard = (card) => {
+      if (card.url) linkUrls.push(card.url);
+      parts.push(cardLabel(card));
+    };
     let mentioned = false;
     let quoteId = null;
     for (const s of segs) {
@@ -158,15 +217,19 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
         case "video":
           parts.push("[视频]");
           break;
-        case "file":
-          parts.push("[文件]");
+        case "file": {
+          const name = String(d.file || d.name || "").split(/[\\/]/).pop().slice(0, 60);
+          parts.push(name ? `[文件：${name}]` : "[文件]");
           break;
+        }
         case "json":
+          addCard(parseJsonCard(d.data));
+          break;
         case "xml":
-          parts.push("[分享卡片]");
+          addCard(parseXmlCard(d.data));
           break;
         case "forward":
-          parts.push("[聊天记录]");
+          parts.push(await readForward(d, fetchForward));
           break;
         default:
           break;
@@ -193,7 +256,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
         log.debug("取引用消息失败：" + e.message);
       }
     }
-    return { text: parts.join("").replace(/\s+/g, " ").trim(), images, mentioned, quote, quoteFromSelf };
+    return { text: parts.join("").replace(/\s+/g, " ").trim(), images, mentioned, quote, quoteFromSelf, linkUrls };
   }
 
   /**
@@ -433,7 +496,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
       warnedNoOwner = true;
       log.warn("还没设置主人 QQ（owner.qq）：现在谁私聊它都会回，且记忆不会和网页共享。建议在网页「设置」里填上你的 QQ 号");
     }
-    const c = await readContent(segs, self);
+    const c = await readContent(segs, self, { fetchForward: true });
     if (!c.text && !c.quote) return { handled: false, reason: "empty" };
     // 主人的小指令（比如「/模型」），直接回，不进聊天记录
     if (commands && owners.includes(uid) && /^[\/／]/.test(c.text)) {
@@ -469,6 +532,11 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
       }));
       const texts = items.map((x) => x.text);
       const extraNotes = [];
+      // 主人发来的链接和卡片：替它打开看一眼
+      if (links && isOwner) {
+        const note = await links.noteFor([...texts, ...items.map((x) => x.quote || "")], items.flatMap((x) => (x.content && x.content.linkUrls) || []));
+        if (note) extraNotes.push(note);
+      }
       if (items.some((x) => x.poke && !x.saved) && config.qq.pokeBack && random() < 0.5) {
         try {
           await callApi("friend_poke", { user_id: String(uid) });

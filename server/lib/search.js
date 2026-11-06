@@ -2,7 +2,7 @@
 /*
  * 联网搜索：只在需要实时信息时用（天气、新闻、价格、比赛、版本、人物近况……）。
  * 解析代码沿用旧项目实测可用的 Bing / 搜狗 / wttr.in 天气 / 维基百科摘要。
- * 只取搜索结果的标题和摘要，不去抓任意网页正文（避免访问到内网地址之类的安全问题）。
+ * 只取搜索结果的标题和摘要，不去抓任意网页正文（读对方发来的链接是 linkreader.js 的事，那边有防内网访问的检查）。
  * search() 永不抛异常：失败返回空结果，聊天照常进行。
  */
 
@@ -209,4 +209,4 @@ function createSearch({ config, log, fetch = globalThis.fetch, now = Date.now })
   return { search, toNote, detectSearchIntent, stats: () => ({ ...stats }) };
 }
 
-module.exports = { createSearch, detectSearchIntent, parseBing, parseSogou, decodeBingUrl, cleanText };
+module.exports = { createSearch, detectSearchIntent, parseBing, parseSogou, decodeBingUrl, cleanText, decodeHtml };

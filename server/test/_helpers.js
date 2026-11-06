@@ -64,9 +64,14 @@ function fakeNet({ llm = () => "〔想〕嗯\n〔心情〕平静\n好呀", onebo
   return { fetch, calls };
 }
 
-async function start({ config = {}, net = fakeNet(), now, random = () => 0.5 } = {}) {
+/** 测试默认不联网：读链接直接失败；要测读链接时传 linkGet */
+const noNetwork = async () => {
+  throw new Error("测试里不联网");
+};
+
+async function start({ config = {}, net = fakeNet(), now, random = () => 0.5, linkGet = noNetwork } = {}) {
   const root = makeRoot(config);
-  const ctx = build({ root, dataDir: path.join(root, "data"), env: {}, fetch: net.fetch, silent: true, now, random, sleep: async () => {} });
+  const ctx = build({ root, dataDir: path.join(root, "data"), env: {}, fetch: net.fetch, silent: true, now, random, sleep: async () => {}, linkGet });
   await new Promise((r) => ctx.app.server.listen(0, "127.0.0.1", r));
   ctx.app.server.unref(); // 测试失败时也不会卡住进程
   const port = ctx.app.server.address().port;

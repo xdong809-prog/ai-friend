@@ -703,8 +703,13 @@
       $("#mBaseUrl").value = p.baseUrl;
       $("#mModel").value = p.model;
       $("#mName").value = p.name;
+      const price = p.prices || {};
+      $("#mPriceHit").value = price.hit === undefined ? "" : price.hit;
+      $("#mPriceMiss").value = price.miss === undefined ? "" : price.miss;
+      $("#mPriceOut").value = price.out === undefined ? "" : price.out;
     } else {
       $("#mName").value = "";
+      ["#mPriceHit", "#mPriceMiss", "#mPriceOut"].forEach((id) => ($(id).value = ""));
     }
     $("#mKey").value = "";
     $("#mFetchMsg").textContent = "";
@@ -713,7 +718,14 @@
     $("#modelEditor").scrollIntoView({ behavior: "smooth" });
   }
   function draft() {
-    return { preset: $("#mPreset").value, baseUrl: $("#mBaseUrl").value.trim(), apiKey: $("#mKey").value.trim(), model: $("#mModel").value.trim(), name: $("#mName").value.trim() };
+    return {
+      preset: $("#mPreset").value,
+      baseUrl: $("#mBaseUrl").value.trim(),
+      apiKey: $("#mKey").value.trim(),
+      model: $("#mModel").value.trim(),
+      name: $("#mName").value.trim(),
+      prices: { hit: $("#mPriceHit").value, miss: $("#mPriceMiss").value, out: $("#mPriceOut").value },
+    };
   }
   $("#addModelBtn").addEventListener("click", () => openEditor(null));
   $("#mCancel").addEventListener("click", () => ($("#modelEditor").hidden = true));
@@ -819,7 +831,119 @@
     } catch (e) {
       dl.textContent = "读取失败：" + e.message;
     }
+    loadUsage();
+    loadBackupStatus();
   }
+
+  // ---------- 用量 ----------
+  const fmtTokens = (n) => (n >= 10000 ? (n / 10000).toFixed(n >= 100000 ? 0 : 1) + " 万" : String(n));
+  const fmtCost = (c) => (c <= 0 ? "$0" : c < 0.001 ? "不到 $0.001" : "$" + c.toFixed(c < 1 ? 3 : 2));
+  const shortDay = (day) => Number(day.slice(5, 7)) + "/" + Number(day.slice(8, 10));
+  function renderUsage(u) {
+    const stats = $("#usageStats");
+    stats.innerHTML = "";
+    for (const [label, x] of [["今天", u.today], ["近 7 天", u.week], ["这个月", u.month]]) {
+      const d = el("div");
+      d.append(el("b", "", fmtTokens(x.prompt + x.completion) + " token"), el("span", "", label + " · 约 " + fmtCost(x.cost) + (x.fails ? " · 失败 " + x.fails + " 次" : "")));
+      stats.appendChild(d);
+    }
+    // 柱状图：一个系列，高度是当天 token；整列都能悬停，比柱子本身好点
+    const chart = $("#usageChart");
+    const tip = $("#usageTip");
+    chart.innerHTML = "";
+    const peak = Math.max(1, ...u.daily.map((d) => d.tokens));
+    const total = u.daily.reduce((n, d) => n + d.tokens, 0);
+    chart.setAttribute("aria-label", "近 14 天每天用的 token，共 " + fmtTokens(total) + "，最多的一天 " + fmtTokens(peak));
+    u.daily.forEach((d, i) => {
+      const col = el("div", "usage-col");
+      const bar = el("div", "usage-bar");
+      bar.style.height = d.tokens ? Math.max(3, (d.tokens / peak) * 100) + "%" : "0";
+      col.appendChild(bar);
+      col.tabIndex = 0;
+      const show = () => {
+        tip.hidden = false;
+        tip.textContent = shortDay(d.day) + "：" + fmtTokens(d.tokens) + " token，约 " + fmtCost(d.cost) + "，调用 " + d.calls + " 次" + (d.fails ? "，失败 " + d.fails + " 次" : "");
+        // 对准这根柱子，但别伸出图表两边（手机上会把页面撑宽）
+        const width = chart.clientWidth;
+        const center = ((i + 0.5) / u.daily.length) * width;
+        tip.style.left = Math.max(0, Math.min(width - tip.offsetWidth, center - tip.offsetWidth / 2)) + "px";
+      };
+      col.addEventListener("mouseenter", show);
+      col.addEventListener("focus", show);
+      col.addEventListener("click", show);
+      col.addEventListener("mouseleave", () => (tip.hidden = true));
+      col.addEventListener("blur", () => (tip.hidden = true));
+      chart.appendChild(col);
+    });
+    const axis = $("#usageAxis");
+    axis.innerHTML = "";
+    axis.append(el("span", "", shortDay(u.daily[0].day)), el("span", "", "今天"));
+    const table = $("#usageDays");
+    table.innerHTML = "";
+    const head = el("tr");
+    ["日期", "token", "花费", "调用", "失败"].forEach((t) => head.appendChild(el("th", "", t)));
+    table.appendChild(head);
+    for (const d of u.daily.slice().reverse()) {
+      const tr = el("tr");
+      [shortDay(d.day), fmtTokens(d.tokens), fmtCost(d.cost), d.calls, d.fails].forEach((t) => tr.appendChild(el("td", "", String(t))));
+      table.appendChild(tr);
+    }
+    const ul = $("#usageModels");
+    ul.innerHTML = "";
+    if (!u.models.length) ul.appendChild(el("li", "muted", "这个月还没调用过"));
+    for (const m of u.models) {
+      const item = el("li");
+      const priced = m.unpriced > 0 && m.cost <= 0 ? "没有价格" : "约 " + fmtCost(m.cost);
+      item.append(el("span", "", m.provider), el("span", "tag", fmtTokens(m.prompt + m.completion) + " token · " + priced + " · 调用 " + m.calls + " 次" + (m.fails ? " · 失败 " + m.fails + " 次" : "")));
+      ul.appendChild(item);
+    }
+    $("#usageNote").textContent = u.month.unpriced > 0 ? "这个月有 " + fmtTokens(u.month.unpriced) + " token 来自没有价格的模型，没算进花费。可以在「模型」页给它填价格。" : "";
+  }
+  async function loadUsage() {
+    try {
+      renderUsage(await api("GET", "/api/usage"));
+    } catch (e) {
+      $("#usageNote").textContent = "读取失败：" + e.message;
+    }
+  }
+
+  // ---------- 备份和恢复 ----------
+  function renderBackup(pending) {
+    $("#restoreCancel").hidden = !pending;
+    $("#restoreMsg").textContent = pending ? "备份已放好（" + fmtTime(pending.createdAt) + " 打的）。关掉再重新打开 AI 好友就会恢复。" : "";
+  }
+  async function loadBackupStatus() {
+    try {
+      renderBackup((await api("GET", "/api/backup/status")).pending);
+    } catch (e) {
+      $("#restoreMsg").textContent = "读取失败：" + e.message;
+    }
+  }
+  $("#backupBtn").addEventListener("click", () => (location.href = "/api/backup"));
+  $("#restoreFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const msg = $("#restoreMsg");
+    const ok = confirm("用「" + file.name + "」恢复吗？\n\n· 重启后，现在的聊天记录、记忆等会换成备份里的\n· 换之前会自动存一份现在的数据到 data/backups/\n· 你现在的 API Key 不会变");
+    if (!ok) {
+      e.target.value = "";
+      return;
+    }
+    msg.textContent = "正在检查备份文件……";
+    try {
+      const res = await fetch("/api/backup/restore", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r.ok === false) throw new Error(r.error || "恢复失败（" + res.status + "）");
+      renderBackup(r.pending);
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+    e.target.value = "";
+  });
+  $("#restoreCancel").addEventListener("click", async () => {
+    const r = await api("POST", "/api/backup/cancel");
+    renderBackup(r.pending);
+  });
   $("#refreshStatus").addEventListener("click", loadStatus);
   $("#testQq").addEventListener("click", async () => {
     await api("POST", "/api/test-qq").catch(() => {});

@@ -33,7 +33,8 @@
       "bing",
       "sogou"
     ],
-    "timeoutMs": 8000
+    "timeoutMs": 8000,
+    "readLinks": true
   },
   "chat": {
     "historyMessages": 60,

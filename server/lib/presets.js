@@ -12,6 +12,16 @@ const PRESETS = [
     keyUrl: "https://platform.deepseek.com/api_keys",
     models: ["deepseek-v4-pro", "deepseek-flash", "deepseek-chat"],
     vision: ["deepseek-flash"],
+    // 官方价格（美元 / 百万 token），2026-11-05 查的 https://api-docs.deepseek.com/quick_start/pricing
+    // 列的是非高峰价；高峰时段翻倍（官方还排除中国法定节假日，这里不算，所以只是估算）
+    pricing: {
+      models: {
+        "deepseek-v4-pro": { hit: 0.022, miss: 0.66, out: 1.98 },
+        "deepseek-flash": { hit: 0.003, miss: 0.15, out: 0.6 },
+        "deepseek-v4-flash": { hit: 0.003, miss: 0.15, out: 0.6 },
+      },
+      peak: { mult: 2, utc: [[1, 4], [6, 10]], weekdaysOnly: true },
+    },
     note: "国内直连，便宜。deepseek-flash 能看图；deepseek-v4-pro 更聪明一些",
   },
   {

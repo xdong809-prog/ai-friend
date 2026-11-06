@@ -240,6 +240,15 @@
           </label>
           <p class="muted" id="mFetchMsg"></p>
           <label>显示名称（可不填）<input id="mName" maxlength="40" placeholder="比如：Kimi 聊天"></label>
+          <details>
+            <summary>价格（可不填，用来估算花费）</summary>
+            <p class="muted">单位：美元 / 百万 token。三个都填才算数；不填时，DeepSeek 用内置的官方价格，其他模型只统计 token。</p>
+            <div class="row">
+              <label>命中缓存的输入<input id="mPriceHit" type="number" min="0" step="any"></label>
+              <label>没命中的输入<input id="mPriceMiss" type="number" min="0" step="any"></label>
+              <label>输出<input id="mPriceOut" type="number" min="0" step="any"></label>
+            </div>
+          </details>
           <div class="row end">
             <span class="muted" id="mTestMsg"></span>
             <button type="button" class="ghost" id="mTest">测试</button>
@@ -320,6 +329,7 @@
           <label class="check"><input type="checkbox" name="stickers.enabled">让它发表情包</label>
           <label class="check"><input type="checkbox" name="stickers.collect">把你发的表情包收进它的表情包库</label>
           <label class="check"><input type="checkbox" name="search.enabled">需要实时信息时联网搜索（天气、新闻、比分……）</label>
+          <label class="check"><input type="checkbox" name="search.readLinks">替它打开你发来的链接看一眼（只看标题和开头，不读本机和内网地址）</label>
         </div>
 
         <div class="card">
@@ -355,6 +365,33 @@
             <button class="ghost" type="button" id="refreshStatus">刷新</button>
           </div>
         </div>
+        <div class="card">
+          <div class="card-head"><h3>用量</h3><span class="muted">花费是估算，单位美元</span></div>
+          <div class="stats" id="usageStats"></div>
+          <p class="chart-title">近 14 天每天用的 token</p>
+          <div class="usage-wrap">
+            <div class="usage-chart" id="usageChart" role="img"></div>
+            <div class="usage-tip" id="usageTip" hidden></div>
+          </div>
+          <div class="usage-axis" id="usageAxis"></div>
+          <details>
+            <summary>按天看数字</summary>
+            <table class="usage-table" id="usageDays"></table>
+          </details>
+          <p class="chart-title">这个月各模型</p>
+          <ul class="list" id="usageModels"></ul>
+          <p class="muted" id="usageNote"></p>
+        </div>
+
+        <div class="card">
+          <h3>备份和恢复</h3>
+          <p class="muted">把聊天记录、记忆、提醒、表情包、角色和设置打包成一个文件，常见解压软件能打开。不包含 API Key、Token 和日志。里面有你的聊天内容，别随便发给别人。</p>
+          <div class="row"><button type="button" id="backupBtn">下载备份</button></div>
+          <label>从备份恢复（选 .tar.gz 文件，重启后才生效，恢复前会先自动存一份现在的数据）<input type="file" id="restoreFile" accept=".gz,.tgz,application/gzip"></label>
+          <p class="muted pre" id="restoreMsg"></p>
+          <div class="row end"><button type="button" class="ghost" id="restoreCancel" hidden>取消恢复</button></div>
+        </div>
+
         <div class="card">
           <h3>怎么接入 QQ</h3>
           <ol class="guide">

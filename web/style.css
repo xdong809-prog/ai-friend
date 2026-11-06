@@ -6,6 +6,7 @@
   --muted: #8a857b;
   --line: #e7e3da;
   --accent: #2f7d6d;
+  --chart: #0f8a6c; /* 图表柱子：比 accent 更饱和，浅色/深色都过了配色检查 */
   --accent-ink: #ffffff;
   --me: #2f7d6d;
   --me-ink: #ffffff;
@@ -24,6 +25,7 @@
     --muted: #9b998f;
     --line: #34352f;
     --accent: #5fb59f;
+    --chart: #22a383;
     --accent-ink: #0f1513;
     --me: #3d8f7d;
     --me-ink: #f4fffb;
@@ -219,3 +221,18 @@ label.inline input[type=time] { width: 112px !important; }
   .msg button.unlike { position: static; display: block; margin: 4px 0 0; opacity: .75; }
 }
 .row button { flex: none; white-space: nowrap; }
+
+/* 用量看板 */
+.chart-title { margin: 14px 0 6px; font-size: 13px; color: var(--ink); font-weight: 500; }
+.usage-wrap { position: relative; }
+.usage-chart { display: flex; align-items: stretch; gap: 2px; height: 96px; border-bottom: 1px solid var(--line); }
+.usage-col { flex: 1; min-width: 0; display: flex; align-items: flex-end; cursor: default; }
+.usage-col:hover, .usage-col:focus-visible { background: var(--bg); outline: none; }
+.usage-bar { width: 100%; max-width: 22px; margin: 0 auto; background: var(--chart); border-radius: 4px 4px 0 0; }
+.usage-axis { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; color: var(--muted); }
+.usage-tip { position: absolute; top: -6px; transform: translateY(-100%); max-width: 260px; width: max-content; padding: 4px 8px; border-radius: 6px; font-size: 12px; color: var(--ink); background: var(--card); border: 1px solid var(--line); box-shadow: 0 2px 6px rgba(0,0,0,.12); pointer-events: none; z-index: 2; }
+.usage-tip[hidden] { display: none; }
+.usage-table { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 12.5px; }
+.usage-table th, .usage-table td { padding: 3px 6px; text-align: right; border-bottom: 1px dashed var(--line); font-weight: normal; }
+.usage-table th { color: var(--muted); }
+.usage-table th:first-child, .usage-table td:first-child { text-align: left; }

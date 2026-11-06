@@ -40,6 +40,7 @@ const DEFAULTS = {
     enabled: true,
     sources: ["weather", "wiki", "bing", "sogou"],
     timeoutMs: 8000,
+    readLinks: true,
   },
   chat: {
     historyMessages: 60,
@@ -157,6 +158,13 @@ function hostOf(u) {
   }
 }
 
+/** 「模型」页手动填的价格（美元 / 百万 token）：三个都填了才算数 */
+function normPrices(v) {
+  if (!isPlainObject(v)) return {};
+  const [hit, miss, out] = [v.hit, v.miss, v.out].map((x) => (x === "" || x === null || x === undefined ? NaN : Number(x)));
+  return [hit, miss, out].every((x) => Number.isFinite(x) && x >= 0) ? { prices: { hit, miss, out } } : {};
+}
+
 function normProviders(list) {
   const out = [];
   const used = new Set();
@@ -177,6 +185,7 @@ function normProviders(list) {
       apiKey: str(p.apiKey, "", 400),
       model,
       noTemperature: typeof p.noTemperature === "boolean" ? p.noTemperature : Boolean(preset.noTemperature),
+      ...normPrices(p.prices),
     });
     if (out.length >= 20) break;
   }
@@ -231,6 +240,7 @@ function normalizeConfig(raw) {
       enabled: bool(c.search.enabled, true),
       sources: (Array.isArray(c.search.sources) ? c.search.sources : D.search.sources).filter((s) => D.search.sources.includes(s)),
       timeoutMs: num(c.search.timeoutMs, D.search.timeoutMs, 2000, 30000),
+      readLinks: bool(c.search.readLinks, true),
     },
     chat: {
       historyMessages: num(c.chat.historyMessages, D.chat.historyMessages, 6, 200),
