@@ -824,6 +824,7 @@
       }
       row("看图", h.vision.enabled ? "开（" + h.vision.model + "）" + (h.vision.lastError ? " · 最近出错：" + h.vision.lastError : "") : "关", h.vision.enabled ? "ok" : "");
       row("表情包库", h.stickers.enabled ? h.stickers.count + " 张" : "关");
+      row("语音", h.voice && h.voice.enabled ? "开" + (h.voice.heard || h.voice.said ? "（听了 " + h.voice.heard + " 条，说了 " + h.voice.said + " 条）" : "") + (h.voice.lastError ? " · 最近出错：" + h.voice.lastError : "") : "关");
       row("联网搜索", h.search.enabled ? "开" + (h.search.count ? "（查过 " + h.search.count + " 次）" : "") : "关");
       if (h.llm.promptTokens) row("缓存命中", Math.round((h.llm.cacheHitTokens / h.llm.promptTokens) * 100) + "%（越高越快越省钱）");
       row("当前心情", h.friend.mood);
@@ -1101,6 +1102,71 @@
       loadGroupList();
     } catch (e) {
       $("#gdRunMsg").textContent = e.message;
+    }
+  });
+
+  // ---------- 语音 ----------
+  let VOICES = [];
+  function fillVoice() {
+    const v = CFG.voice;
+    $("#vEnabled").checked = v.enabled;
+    const ps = $("#vProvider");
+    ps.innerHTML = "";
+    const none = el("option", "", "（选一个服务商）");
+    none.value = "";
+    ps.appendChild(none);
+    for (const p of CFG.providers) {
+      const o = el("option", "", p.name + (p.hasKey ? "" : "（没填 Key）"));
+      o.value = p.id;
+      ps.appendChild(o);
+    }
+    ps.value = v.provider;
+    $("#vMode").value = v.replyMode;
+    $("#vStt").value = v.sttModel;
+    $("#vTts").value = v.ttsModel;
+    // 声音写成「模型:名字」；不在预设里的也留着
+    const vs = $("#vVoice");
+    vs.innerHTML = "";
+    const current = v.ttsVoice.split(":").pop();
+    const list = VOICES.slice();
+    if (!list.some(([id]) => id === current)) list.push([current, "自定义"]);
+    for (const [id, label] of list) {
+      const o = el("option", "", label + "（" + id + "）");
+      o.value = id;
+      vs.appendChild(o);
+    }
+    vs.value = current;
+  }
+  async function saveVoice() {
+    const tts = $("#vTts").value.trim();
+    const r = await api("POST", "/api/config", {
+      voice: { enabled: $("#vEnabled").checked, provider: $("#vProvider").value, replyMode: $("#vMode").value, sttModel: $("#vStt").value.trim(), ttsModel: tts, ttsVoice: tts + ":" + $("#vVoice").value },
+    });
+    CFG = r.config;
+    fillVoice();
+  }
+  $("#vSave").addEventListener("click", async () => {
+    try {
+      await saveVoice();
+      $("#vMsg").textContent = "已保存 ✓";
+    } catch (e) {
+      $("#vMsg").textContent = e.message;
+    }
+  });
+  $("#vTest").addEventListener("click", async () => {
+    const msg = $("#vMsg");
+    msg.textContent = "合成中…";
+    try {
+      await saveVoice(); // 试的就是现在页面上选的
+      const res = await fetch("/api/voice/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "试听失败（" + res.status + "）");
+      const audio = $("#vAudio");
+      audio.src = URL.createObjectURL(await res.blob());
+      audio.hidden = false;
+      audio.play().catch(() => {});
+      msg.textContent = "";
+    } catch (e) {
+      msg.textContent = e.message;
     }
   });
 
@@ -1401,10 +1467,12 @@
       CFG = r.config;
       STYLES = r.styles;
       PRESETS = r.presets || [];
+      VOICES = r.voices || [];
       fillPresetSelect();
       applyHeader();
       fillSettings();
       renderModels();
+      fillVoice();
       await loadPersonaList();
       $("#friendSub").textContent = CFG.llm.hasKey ? "在线" : "简单模式（没接大模型）";
     } catch (e) {

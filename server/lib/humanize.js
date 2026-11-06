@@ -28,6 +28,7 @@ const MARK_RE = (words) => new RegExp(`^[*\\s]*[〔【]\\s*(?:${words})\\s*[〕�
 const REMIND_RE = MARK_RE("提醒");
 const CANCEL_RE = MARK_RE("取消提醒");
 const RULE_RE = MARK_RE("规矩");
+const VOICE_RE = MARK_RE("语音");
 const STICKER_RE = /\[表情包\s*[:：]\s*([^\]\n]{1,12})\]/g;
 /** 单独一条、只是在「表态收到」的客服式回复，有别的内容时直接去掉 */
 const ACK_ONLY_RE = /^(?:明白|收到|了解|好的|知道了|我知道了)(?:了|啦|啊)?[，,。.!！~～]*$/;
@@ -62,16 +63,16 @@ function stripQuotes(s) {
 
 /**
  * 解析模型原始输出。
- * @returns {{thought:string, mood:string, lines:string[], search:string, marks:{reminders:string[], cancels:string[], rules:string[]}}}
+ * @returns {{thought:string, mood:string, lines:string[], search:string, marks:{reminders:string[], cancels:string[], rules:string[], voice:string}}}
  */
 function parseOutput(raw, { selfName = "" } = {}) {
   let thought = "";
   let mood = "";
   let search = "";
   const lines = [];
-  const marks = { reminders: [], cancels: [], rules: [] };
+  const marks = { reminders: [], cancels: [], rules: [], voice: "" };
   // 模型偶尔把几个标记写在同一行，先拆开
-  const text = String(raw || "").replace(/(?!^)\s*([〔【](?:想|心情|情绪|搜索|提醒|取消提醒|规矩)[〕】])/g, "\n$1");
+  const text = String(raw || "").replace(/(?!^)\s*([〔【](?:想|心情|情绪|搜索|提醒|取消提醒|规矩|语音)[〕】])/g, "\n$1");
   for (const rawLine of text.split(/\r?\n/)) {
     let t = rawLine.trim();
     if (!t) continue;
@@ -98,6 +99,10 @@ function parseOutput(raw, { selfName = "" } = {}) {
     }
     if ((m = t.match(REMIND_RE))) {
       if (m[1].trim()) marks.reminders.push(m[1].trim());
+      continue;
+    }
+    if ((m = t.match(VOICE_RE))) {
+      if (m[1].trim() && !marks.voice) marks.voice = stripQuotes(m[1].trim());
       continue;
     }
     if ((m = t.match(RULE_RE))) {

@@ -98,7 +98,7 @@ function forwardSegText(s) {
   }
 }
 
-function createOneBot({ config, brain, log, vision = null, stickers = null, commands = null, digest = null, links = null, fetch = globalThis.fetch, now = Date.now, random = Math.random, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+function createOneBot({ config, brain, log, vision = null, stickers = null, commands = null, digest = null, links = null, voice = null, fetch = globalThis.fetch, now = Date.now, random = Math.random, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const seen = new Map();
   const buffers = new Map();
   const typingUntil = new Map(); // 缓冲区 key → 对方「正在输入」到什么时候
@@ -177,6 +177,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
   async function readContent(segs, self, { fetchQuote = true, fetchForward = false } = {}) {
     const parts = [];
     const images = [];
+    const voices = [];
     const linkUrls = [];
     const addCard = (card) => {
       if (card.url) linkUrls.push(card.url);
@@ -211,9 +212,13 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
           parts.push(token);
           break;
         }
-        case "record":
-          parts.push("[语音]");
+        case "record": {
+          // 先占位，私聊时由 seeImages 换成「[语音：听写出来的字]」
+          const token = `\u0000VOI${voices.length}\u0000`;
+          voices.push({ token, file: String(d.file || d.file_id || ""), path: String(d.path || "") });
+          parts.push(token);
           break;
+        }
         case "video":
           parts.push("[视频]");
           break;
@@ -256,15 +261,16 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
         log.debug("取引用消息失败：" + e.message);
       }
     }
-    return { text: parts.join("").replace(/\s+/g, " ").trim(), images, mentioned, quote, quoteFromSelf, linkUrls };
+    return { text: parts.join("").replace(/\s+/g, " ").trim(), images, voices, mentioned, quote, quoteFromSelf, linkUrls };
   }
 
   /**
    * 看图：把占位符换成「[表情包：熊猫头捂脸，配字…]」。看不了就写「[图片]」，提示词会让模型如实说看不到。
    * collect=true 时，把对方发来的表情包收进它自己的表情包库。
    */
-  async function seeImages(content, { collect = false } = {}) {
+  async function seeImages(content, { collect = false, hear = false } = {}) {
     let text = content.text;
+    for (const v of content.voices || []) text = text.replace(v.token, hear ? await hearVoice(v) : "[语音]");
     for (const img of content.images) {
       let label = img.sticker ? "[表情包]" : "[图片]";
       if (img.summary && img.sticker) label = `[表情包：${img.summary}]`;
@@ -281,7 +287,24 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
       }
       text = text.replace(img.token, label);
     }
-    return text.replace(/\u0000IMG\d+\u0000/g, "[图片]").trim();
+    return text.replace(/\u0000IMG\d+\u0000/g, "[图片]").replace(/\u0000VOI\d+\u0000/g, "[语音]").trim();
+  }
+
+  /** 听语音：让 NapCat 转成 mp3（它会直接给 base64），交给听写。听不了就是「[语音]」 */
+  async function hearVoice(v) {
+    if (!voice || !voice.enabled() || !v.file) return "[语音]";
+    try {
+      const r = await callApi("get_record", { file: v.file, out_format: "mp3" });
+      const data = (r && r.data) || {};
+      let buf = data.base64 ? Buffer.from(String(data.base64), "base64") : null;
+      if (!buf && data.file) buf = fs.readFileSync(String(data.file).replace(/^file:\/\/\/?/, ""));
+      const said = await voice.transcribe(buf);
+      log.info("听懂了一条语音：" + said.slice(0, 40));
+      return `[语音：${said}]`;
+    } catch (e) {
+      log.warn("听语音失败：" + e.message);
+      return "[语音]";
+    }
   }
 
   /** 图片链接下载失败时，向 NapCat 要它缓存在本机的那份文件（NapCat 和本服务在同一台电脑上） */
@@ -323,6 +346,17 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
 
   // ---------- 发送 ----------
 
+  /** 一条语音：合成 mp3 交给 NapCat；合成失败就发文字 */
+  async function voiceSegments(text) {
+    try {
+      const audio = await voice.speak(text);
+      return [{ type: "record", data: { file: "base64://" + audio.toString("base64") } }];
+    } catch (e) {
+      log.warn("合成语音失败，改发文字：" + e.message);
+      return toSegments(text);
+    }
+  }
+
   function stickerSegment(part) {
     try {
       const buf = fs.readFileSync(part.path);
@@ -345,12 +379,20 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
       }
       const part = parts[i];
       const one = part.type === "sticker" ? stickerSegment(part) : null;
-      const segs = part.type === "sticker" ? (one ? [one] : []) : toSegments(part.text);
+      const segs = part.type === "sticker" ? (one ? [one] : []) : part.type === "voice" ? await voiceSegments(part.text) : toSegments(part.text);
       if (!segs.length) continue;
       if (i === 0 && replyToId && target.kind === "group") segs.unshift({ type: "reply", data: { id: String(replyToId) } });
+      const send = (message) =>
+        target.kind === "group" ? callApi("send_group_msg", { group_id: Number(target.id), message }) : callApi("send_private_msg", { user_id: Number(target.id), message });
       try {
-        if (target.kind === "group") await callApi("send_group_msg", { group_id: Number(target.id), message: segs });
-        else await callApi("send_private_msg", { user_id: Number(target.id), message: segs });
+        try {
+          await send(segs);
+        } catch (e) {
+          // 语音发不出去（NapCat 转码失败等）：改发文字，话还是要说到
+          if (segs[0].type !== "record") throw e;
+          log.warn("发语音失败，改发文字：" + e.message);
+          await send(toSegments(part.text));
+        }
         sent++;
       } catch (e) {
         stats.sendError = e.message;
@@ -366,7 +408,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
 
   /** 这条消息之后要等多久（看它像不像没说完、是不是只发了张图） */
   function waitAfter(c) {
-    const text = c.text.replace(/\u0000IMG\d+\u0000/g, "").trim();
+    const text = c.text.replace(/\u0000(?:IMG|VOI)\d+\u0000/g, "").trim();
     return mergeWait({ text, imageOnly: !text && c.images.some((i) => !i.sticker) }, config.qq.mergeWindowMs);
   }
 
@@ -528,10 +570,14 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
       setTyping(target);
       // 按顺序看图（并发下载，顺序不乱）；看过的记下来，重新想时不用再看一遍
       await Promise.all(items.map(async (x) => {
-        if (x.text === undefined) x.text = x.content ? await seeImages(x.content, { collect: isOwner }) : "";
+        if (x.text === undefined) x.text = x.content ? await seeImages(x.content, { collect: isOwner, hear: true }) : "";
       }));
       const texts = items.map((x) => x.text);
       const extraNotes = [];
+      // 设成「你发语音它也回语音」时，告诉它这轮可以用语音回
+      if (voice && voice.canSpeak() && config.voice.replyMode === "mirror" && items.some((x) => x.content && x.content.voices && x.content.voices.length)) {
+        extraNotes.push("对方这次发的是语音，你也可以用〔语音〕回一句。");
+      }
       // 主人发来的链接和卡片：替它打开看一眼
       if (links && isOwner) {
         const note = await links.noteFor([...texts, ...items.map((x) => x.quote || "")], items.flatMap((x) => (x.content && x.content.linkUrls) || []));
@@ -577,7 +623,7 @@ function createOneBot({ config, brain, log, vision = null, stickers = null, comm
   function plainText(c) {
     let text = c.text;
     for (const img of c.images) text = text.replace(img.token, img.sticker ? (img.summary ? `[表情包：${img.summary}]` : "[表情包]") : "[图片]");
-    return text.trim();
+    return text.replace(/\u0000VOI\d+\u0000/g, "[语音]").trim();
   }
 
   function groupBuffer(gid) {

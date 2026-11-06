@@ -21,7 +21,7 @@ const { detectSearchIntent } = require("./search");
 const GAP_NOTE_MS = 60 * 60 * 1000; // 两条消息隔超过 1 小时，就在上下文里标出来
 const RAW_LOG_MAX = 2 * 1024 * 1024;
 
-function createBrain({ config, memory, llm, dataDir, log, stickers = null, search = null, reminders = null, diary = null, now = Date.now, random = Math.random }) {
+function createBrain({ config, memory, llm, dataDir, log, stickers = null, search = null, reminders = null, diary = null, voice = null, now = Date.now, random = Math.random }) {
   const stateDir = path.join(dataDir, "state");
   ensureDir(stateDir);
   const rawLog = path.join(dataDir, "logs", "llm-raw.jsonl");
@@ -62,6 +62,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       // 提醒靠 QQ 发出去：QQ 没开或没设主人时，不能让它答应
       reminders: Boolean(reminders && config.qq.enabled && config.owner.qq.length),
       rules: true,
+      voice: Boolean(voice && voice.canSpeak()),
     };
   }
 
@@ -145,9 +146,13 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
 
   function finish(raw, { inputText, startedAt, isGroup, ab, selfName = config.friend.name }) {
     const parsed = parseOutput(raw, { selfName });
-    let bubbles = toBubbles(parsed.lines, { mood: parsed.mood, maxBubbles: config.humanize.maxBubbles, stickers: ab.stickers });
+    // 〔语音〕：能发语音就单独成一条语音；不能发（网页、群聊、没配置）就当普通文字
+    const spoken = parsed.marks.voice;
+    const lines = spoken && !ab.voice ? [...parsed.lines, spoken] : parsed.lines;
+    let bubbles = toBubbles(lines, { mood: parsed.mood, maxBubbles: config.humanize.maxBubbles - (spoken && ab.voice ? 1 : 0) || 1, stickers: ab.stickers });
     if (isGroup) bubbles = bubbles.slice(0, 2);
     const parts = resolveParts(bubbles, parsed.mood, ab.stickers);
+    if (spoken && ab.voice) parts.push({ type: "voice", text: spoken.slice(0, 120) });
     if (!parts.length) return { empty: true, search: parsed.search, thought: parsed.thought, mood: parsed.mood };
     const late = new Date(startedAt).getHours() < 6; // 深夜回得慢一点
     const p = plan(parts.map((x) => (x.type === "text" ? x.text : "图")), {
@@ -245,6 +250,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     const ab = abilities();
     if (isGroup || persona) ab.reminders = false; // 只有和主好友私聊时能定提醒
     if (isGroup) ab.rules = false;
+    if (isGroup || persona || channel !== "qq") ab.voice = false; // 语音只在 QQ 私聊
 
     const notes = [...extraNotes];
     let history;
@@ -347,7 +353,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
   }
 
   function partsToText(parts) {
-    return parts.map((p) => (p.type === "sticker" ? `[表情包:${p.keyword}]` : p.text)).join("\n");
+    return parts.map((p) => (p.type === "sticker" ? `[表情包:${p.keyword}]` : p.type === "voice" ? `（语音）${p.text}` : p.text)).join("\n");
   }
 
   function commit(sessionId, result, { st, isGroup, engine }) {
@@ -362,7 +368,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     }
     saveState(sessionId, st);
     if (result.thought) log.debug(`〔想〕${result.thought}（${result.mood}）`);
-    const bubbles = result.parts.map((p) => (p.type === "sticker" ? `[表情包:${p.keyword}]` : p.text));
+    const bubbles = result.parts.map((p) => (p.type === "sticker" ? `[表情包:${p.keyword}]` : p.type === "voice" ? `（语音）${p.text}` : p.text));
     return { engine, sessionId, bubbles, ...result, text };
   }
 

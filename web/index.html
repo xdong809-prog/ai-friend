@@ -286,8 +286,30 @@
           <label>看图的模型名<input id="roleVisionModel" placeholder="空着 = 用这家推荐的看图模型"></label>
           <label>活泼程度 <span class="muted" id="tempVal"></span><input id="roleTemp" type="range" min="0.3" max="1.2" step="0.05"></label>
           <label>最长回复（token）<input id="roleMaxTokens" type="number" min="200" max="8000" step="100"></label>
-          <p class="muted">用会「先思考再回答」的推理模型时，把最长回复调到 2000 以上，不然可能想完了没字数说话。</p>
+          <p class="muted">用会「先思考再回答」的推理模型时，字数被思考用完的话会自动加到 3000 再答一次；常用推理模型的话，这里直接填 3000 更省事。</p>
           <div class="row end"><span class="muted" id="roleMsg"></span><button type="button" id="roleSave">保存分工</button></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>语音</h3><span class="muted">只在 QQ 私聊</span></div>
+          <p class="muted">听懂你发的语音，你想听的时候用声音回你。要用支持语音的服务：先在上面添加「硅基流动」并填 Key（DeepSeek 不支持语音），再在这里选它。没开的时候一切照旧。用多少花多少，「状态」页的用量不含语音。</p>
+          <label class="check"><input type="checkbox" id="vEnabled">开启语音</label>
+          <label>用哪个服务<select id="vProvider"></select></label>
+          <label>什么时候用声音回你
+            <select id="vMode">
+              <option value="asked">你让它发语音的时候</option>
+              <option value="mirror">你发语音时，它也可能回语音</option>
+              <option value="off">从不（只听懂你的语音）</option>
+            </select>
+          </label>
+          <label>声音<select id="vVoice"></select></label>
+          <details>
+            <summary>模型名（一般不用改）</summary>
+            <label>听写用<input id="vStt"></label>
+            <label>说话用<input id="vTts"></label>
+          </details>
+          <audio id="vAudio" controls hidden></audio>
+          <div class="row end"><span class="muted" id="vMsg"></span><button type="button" class="ghost" id="vTest">试听</button><button type="button" id="vSave">保存</button></div>
         </div>
       </div>
     </section>

@@ -70,7 +70,7 @@ test("认识的时间写法：一次性、每天、工作日、周末、每周�
 test("〔提醒〕〔取消提醒〕〔规矩〕都不会发出去；普通消息里的「（提醒）」不受影响", () => {
   const r = parseOutput("〔想〕嗯\n〔心情〕开心\n好的明早叫你\n〔提醒〕2026-11-06 08:00｜叫他起床\n〔取消提醒〕喝水\n〔规矩〕少用问句\n（提醒）别忘了带伞");
   assert.deepEqual(r.lines, ["好的明早叫你", "（提醒）别忘了带伞"]);
-  assert.deepEqual(r.marks, { reminders: ["2026-11-06 08:00｜叫他起床"], cancels: ["喝水"], rules: ["少用问句"] });
+  assert.deepEqual(r.marks, { reminders: ["2026-11-06 08:00｜叫他起床"], cancels: ["喝水"], rules: ["少用问句"], voice: "" });
   // 模型把标记写在同一行也能拆开
   const same = parseOutput("〔想〕嗯 〔心情〕开心\n好〔提醒〕每天 11:00｜喝水");
   assert.deepEqual(same.lines, ["好"]);

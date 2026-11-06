@@ -22,6 +22,7 @@ const { createReminders, lastAt, whenText } = require("./lib/reminders");
 const { createLinkReader, httpGet } = require("./lib/linkreader");
 const { createUsage } = require("./lib/usage");
 const { createDiary } = require("./lib/diary");
+const { createVoice } = require("./lib/voice");
 const { applyPendingRestore } = require("./lib/backup");
 const { createApp, VERSION } = require("./lib/app");
 const { ymd, fmtGap } = require("./lib/util");
@@ -131,7 +132,8 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   const links = createLinkReader({ config, log, now, get: linkGet });
   const reminders = createReminders({ dataDir, log, now });
   const diary = createDiary({ config, dataDir, memory, llm, log, now });
-  const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, reminders, diary, now, random });
+  const voice = createVoice({ config, log, fetch });
+  const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, reminders, diary, voice, now, random });
   const compressJob = createCompressJob({ memory, llm, log, now });
   const personas = createPersonas({ config, dataDir, memory, llm, log, now });
   // onebot 和 watchdog 在下面才建好；这两个函数只在之后被调用
@@ -146,11 +148,11 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
     listGroups: async () => (await onebot.callApi("get_group_list", {})).data || [],
   });
   const commands = createCommands({ root, config, llm, log, env, compressJob, digest, memory, reminders });
-  const onebot = createOneBot({ config, brain, log, vision, stickers, commands, digest, links, fetch, now, random, sleep });
+  const onebot = createOneBot({ config, brain, log, vision, stickers, commands, digest, links, voice, fetch, now, random, sleep });
   const notify = createNotifier({ config, log, fetch });
   const watchdog = createWatchdog({ config, onebot, notify, log, now });
-  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, reminders, links, usage, diary, dataDir, now });
-  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, reminders, links, usage, diary, app };
+  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, reminders, links, usage, diary, voice, dataDir, now });
+  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, reminders, links, usage, diary, voice, app };
 }
 
 /**

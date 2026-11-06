@@ -88,6 +88,15 @@ const DEFAULTS = {
     desktop: true,
     webhook: "",
   },
+  // 语音（只在 QQ 私聊）：provider 是「模型」页里某个服务商的 id，用它的地址和 Key
+  voice: {
+    enabled: false,
+    provider: "",
+    sttModel: "FunAudioLLM/SenseVoiceSmall",
+    ttsModel: "FunAudioLLM/CosyVoice2-0.5B",
+    ttsVoice: "FunAudioLLM/CosyVoice2-0.5B:claire",
+    replyMode: "asked",
+  },
   // 它的日记：每晚这个时间以后写当天的（网页「日记」页看）
   diary: {
     enabled: true,
@@ -292,6 +301,14 @@ function normalizeConfig(raw) {
     notify: {
       desktop: bool(c.notify.desktop, true),
       webhook: str(c.notify.webhook, "", 500),
+    },
+    voice: {
+      enabled: bool(c.voice.enabled, false),
+      provider: pickId(c.voice.provider),
+      sttModel: str(c.voice.sttModel, D.voice.sttModel, 120) || D.voice.sttModel,
+      ttsModel: str(c.voice.ttsModel, D.voice.ttsModel, 120) || D.voice.ttsModel,
+      ttsVoice: str(c.voice.ttsVoice, D.voice.ttsVoice, 160) || D.voice.ttsVoice,
+      replyMode: ["asked", "mirror", "off"].includes(c.voice.replyMode) ? c.voice.replyMode : "asked",
     },
     diary: {
       enabled: bool(c.diary.enabled, true),

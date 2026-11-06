@@ -13,9 +13,10 @@ const { FACE_NAMES_FOR_PROMPT } = require("./qqfaces");
 const { PRESETS, presetOf } = require("./presets");
 const { friendlyError } = require("./llm");
 const { ymd } = require("./util");
+const { VOICES } = require("./voice");
 const { createBackup, backupFileName, stageRestore, pendingInfo, cancelRestore } = require("./backup");
 
-const VERSION = "4.10.0";
+const VERSION = "4.11.0";
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -28,7 +29,7 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
-function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, dataDir = path.join(root, "data"), personas = null, reminders = null, links = null, usage = null, diary = null, now = Date.now }) {
+function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, dataDir = path.join(root, "data"), personas = null, reminders = null, links = null, usage = null, diary = null, voice = null, now = Date.now }) {
   const webDir = path.join(root, "web");
   let server;
   const guard = createLocalGuard({
@@ -49,6 +50,7 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       vision: vision ? vision.stats() : { enabled: false },
       stickers: { enabled: config.stickers.enabled, count: stickers ? stickers.count() : 0 },
       search: { enabled: config.search.enabled, ...(search ? search.stats() : {}) },
+      voice: voice ? voice.stats() : { enabled: false },
     };
   }
 
@@ -102,6 +104,7 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       current: llm.current(),
       faces: FACE_NAMES_FOR_PROMPT.split("、"),
       version: VERSION,
+      voices: VOICES,
     }),
     "POST /api/config": async (req) => {
       const body = await readJsonBody(req);
@@ -350,6 +353,19 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       return res.end();
+    }
+
+    // 试听：用现在保存的语音设置念一句，返回 mp3
+    if (pathname === "/api/voice/test" && req.method === "POST") {
+      const b = await readJsonBody(req);
+      if (!voice || !voice.enabled()) return sendJson(res, 400, { ok: false, error: "先开启语音，选好服务商并保存（服务商要填了 Key）" });
+      try {
+        const audio = await voice.speak(String(b.text || "") || `你好呀，我是${config.friend.name}`);
+        res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": audio.length });
+        return res.end(audio);
+      } catch (e) {
+        return sendJson(res, 502, { ok: false, error: e.message });
+      }
     }
 
     if (pathname === "/api/backup" && req.method === "GET") {
