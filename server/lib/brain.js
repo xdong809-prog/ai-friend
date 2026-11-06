@@ -12,7 +12,7 @@
  */
 const fs = require("node:fs");
 const path = require("node:path");
-const { readJson, writeJsonAtomic, ensureDir, safeName, fmtNow, fmtGap, fmtShort, createKeyedLock } = require("./util");
+const { readJson, writeJsonAtomic, ensureDir, safeName, fmtNow, fmtGap, fmtShort, createKeyedLock, ymd } = require("./util");
 const { buildStaticPrompt, buildDynamicPrompt, lifeNow, hashStr } = require("./persona");
 const { parseOutput, toBubbles, stickerOf, plan } = require("./humanize");
 const { offlineReply } = require("./offline");
@@ -21,7 +21,7 @@ const { detectSearchIntent } = require("./search");
 const GAP_NOTE_MS = 60 * 60 * 1000; // 两条消息隔超过 1 小时，就在上下文里标出来
 const RAW_LOG_MAX = 2 * 1024 * 1024;
 
-function createBrain({ config, memory, llm, dataDir, log, stickers = null, search = null, reminders = null, now = Date.now, random = Math.random }) {
+function createBrain({ config, memory, llm, dataDir, log, stickers = null, search = null, reminders = null, diary = null, now = Date.now, random = Math.random }) {
   const stateDir = path.join(dataDir, "state");
   ensureDir(stateDir);
   const rawLog = path.join(dataDir, "logs", "llm-raw.jsonl");
@@ -75,7 +75,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
   }
 
   /** life=false：导入的角色是真实存在的人，不给它编「此刻在干嘛」 */
-  function stateBlock(st, t, gapMs, recentMsgs = [], { life: withLife = true } = {}) {
+  function stateBlock(st, t, gapMs, recentMsgs = [], { life: withLife = true, milestone = "" } = {}) {
     const moodAge = t - (st.moodAt || 0);
     const fresh = moodAge < 3 * 3600 * 1000;
     const rows = [`现在是 ${fmtNow(t)}。`];
@@ -88,6 +88,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
       if (lifeMentioned(life, recentMsgs)) rows.push(`你此刻在：${life}。这个你刚才已经说过了，这轮别再提，注意力放在对方身上。`);
       else rows.push(`你此刻大概在：${life}（这是你的生活背景，可以自然提一句，不用每次说）。`);
     }
+    if (milestone) rows.push(`${milestone}。合适的时候可以自然地提一句（开个玩笑、说句祝福都行），别生硬，也不用每句都提。`);
     const h = new Date(t).getHours();
     if (h < 6) rows.push("已经是深夜了，你有点困：回得短一点，可以让对方早点睡，但别每句都催。");
     return "【此刻】\n" + rows.join("\n");
@@ -272,6 +273,10 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     if (inputs.length > 1) notes.push(`对方刚刚连着发了 ${inputs.length} 条，这是一段完整的话：先连起来弄懂对方整体想说什么、最在意的是哪一点，再像朋友那样整体回应，不要一条一条分别回。`);
 
     st.lastUserAt = startedAt;
+    if (!isGroup && !st.firstAt) st.firstAt = memory.firstTs(sessionId) || startedAt;
+    // 纪念日：只提醒主好友，而且只在当天的第一句回复里提（发出去了才算提过，见 commit 前）
+    let milestone = "";
+    if (diary && sessionId === "main" && st.milestoneDay !== ymd(startedAt)) milestone = diary.todayNote(st, startedAt);
 
     if (!llm.enabled()) {
       const bubbles = offlineReply(joined, random);
@@ -300,7 +305,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
         reminders: ab.reminders ? reminders.block() : "",
         summary,
         relevant,
-        stateBlock: stateBlock(st, startedAt, gapMs, history, { life: !persona }),
+        stateBlock: stateBlock(st, startedAt, gapMs, history, { life: !persona, milestone }),
         note: [...notes, ...extra].filter(Boolean).join("\n"),
       });
     const call = async (extra, opts = {}) => {
@@ -335,6 +340,7 @@ function createBrain({ config, memory, llm, dataDir, log, stickers = null, searc
     if (searched) result.searchInfo = { query: searched.query, engine: searched.engine, results: searched.results.map((r) => ({ title: r.title, url: r.url, site: r.site })) };
     if (beforeCommit && !(await beforeCommit(result))) return { stale: true };
     applyMarks(sessionId, result, ab);
+    if (milestone && engine === "llm") st.milestoneDay = ymd(startedAt);
     const out = commit(sessionId, result, { st, isGroup, engine });
     if (!isGroup && engine === "llm") background(sessionId);
     return out;

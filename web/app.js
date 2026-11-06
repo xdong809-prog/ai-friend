@@ -50,6 +50,7 @@
       if (b.dataset.tab === "memory") loadMemory();
       if (b.dataset.tab === "groups") loadGroups();
       if (b.dataset.tab === "personas") loadPersonas();
+      if (b.dataset.tab === "diary") loadDiary();
       if (b.dataset.tab === "status") loadStatus();
       if (b.dataset.tab === "models") renderModels();
     })
@@ -1100,6 +1101,63 @@
       loadGroupList();
     } catch (e) {
       $("#gdRunMsg").textContent = e.message;
+    }
+  });
+
+  // ---------- 日记和时间线 ----------
+  function renderDiary(r) {
+    const t = r.timeline;
+    const stats = $("#diaryStats");
+    stats.innerHTML = "";
+    const cell = (v, label) => {
+      const d = el("div");
+      d.append(el("b", "", v), el("span", "", label));
+      stats.appendChild(d);
+    };
+    cell(t.dayNo ? "第 " + t.dayNo + " 天" : "还没开始", "认识" + (t.firstAt ? "（从 " + fmtTime(t.firstAt) + " 起）" : ""));
+    cell(t.messages + " 条", "一共聊了");
+    cell(r.list.length + " 篇", "日记");
+    const ms = $("#milestones");
+    ms.innerHTML = "";
+    if (!t.upcoming.length) ms.appendChild(el("li", "muted", "还没有。聊一阵子就有了；告诉它你的生日，它也会记得"));
+    for (const u of t.upcoming) {
+      const li = el("li");
+      li.append(el("b", "", u.inDays === 0 ? "今天" : u.inDays === 1 ? "明天" : u.inDays + " 天后"), document.createTextNode(u.text));
+      ms.appendChild(li);
+    }
+    $("#diaryInfo").textContent = r.enabled ? "每晚自动写" : "已关（设置 → 像真人）";
+    const list = $("#diaryList");
+    list.innerHTML = "";
+    if (!r.list.length) list.appendChild(el("p", "muted", "还没有日记。哪天聊得多，晚上它就会写一篇；也可以点上面的按钮现在写。"));
+    for (const e of r.list) {
+      const a = el("article", "diary-entry");
+      a.append(el("h4", "", e.title), el("p", "", e.text));
+      list.appendChild(a);
+    }
+    const job = r.job || {};
+    const btn = $("#diaryWrite");
+    btn.disabled = Boolean(job.running);
+    btn.textContent = job.running ? "写着呢…" : "现在写今天的";
+    $("#diaryMsg").textContent = job.running ? "正在" + (job.progress || "写日记") + "……" : job.error ? "没写成：" + job.error : job.skipped && job.finishedAt && Date.now() - job.finishedAt < 60000 ? job.skipped : "";
+  }
+  let diaryTimer = null;
+  async function loadDiary() {
+    clearTimeout(diaryTimer);
+    try {
+      const r = await api("GET", "/api/diary");
+      renderDiary(r);
+      if (r.job && r.job.running) diaryTimer = setTimeout(loadDiary, 1500);
+    } catch (e) {
+      $("#diaryMsg").textContent = "读取失败：" + e.message;
+    }
+  }
+  $("#diaryWrite").addEventListener("click", async () => {
+    try {
+      await api("POST", "/api/diary/write");
+      diaryTimer = setTimeout(loadDiary, 800);
+      $("#diaryMsg").textContent = "开始写了……";
+    } catch (e) {
+      $("#diaryMsg").textContent = e.message;
     }
   });
 

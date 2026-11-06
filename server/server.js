@@ -21,6 +21,7 @@ const { createPersonas } = require("./lib/personas");
 const { createReminders, lastAt, whenText } = require("./lib/reminders");
 const { createLinkReader, httpGet } = require("./lib/linkreader");
 const { createUsage } = require("./lib/usage");
+const { createDiary } = require("./lib/diary");
 const { applyPendingRestore } = require("./lib/backup");
 const { createApp, VERSION } = require("./lib/app");
 const { ymd, fmtGap } = require("./lib/util");
@@ -129,7 +130,8 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   const search = createSearch({ config, log, fetch, now });
   const links = createLinkReader({ config, log, now, get: linkGet });
   const reminders = createReminders({ dataDir, log, now });
-  const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, reminders, now, random });
+  const diary = createDiary({ config, dataDir, memory, llm, log, now });
+  const brain = createBrain({ config, memory, llm, dataDir, log, stickers, search, reminders, diary, now, random });
   const compressJob = createCompressJob({ memory, llm, log, now });
   const personas = createPersonas({ config, dataDir, memory, llm, log, now });
   // onebot 和 watchdog 在下面才建好；这两个函数只在之后被调用
@@ -147,8 +149,8 @@ function build({ root = ROOT, dataDir = path.join(root, "data"), env = process.e
   const onebot = createOneBot({ config, brain, log, vision, stickers, commands, digest, links, fetch, now, random, sleep });
   const notify = createNotifier({ config, log, fetch });
   const watchdog = createWatchdog({ config, onebot, notify, log, now });
-  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, reminders, links, usage, dataDir, now });
-  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, reminders, links, usage, app };
+  const app = createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision, stickers, search, compressJob, digest, personas, reminders, links, usage, diary, dataDir, now });
+  return { config, log, llm, memory, vision, stickers, search, brain, onebot, watchdog, compressJob, digest, personas, reminders, links, usage, diary, app };
 }
 
 /**
@@ -193,6 +195,27 @@ async function checkReminders({ config, reminders, onebot, memory, watchdog, log
     }
   }
   return sent;
+}
+
+/** 日记：到点写今天的，顺便补写最近几天漏掉的（服务当晚没开的时候） */
+function checkDiary({ diary }, t = Date.now()) {
+  const days = diary.due(t);
+  return days.length ? diary.start(days).promise : null;
+}
+
+function startDiary(ctx) {
+  const run = () => {
+    try {
+      const r = checkDiary(ctx);
+      if (r) r.catch((e) => ctx.log.warn("写日记失败：" + e.message));
+    } catch (e) {
+      ctx.log.warn("写日记失败：" + e.message);
+    }
+  };
+  const first = setTimeout(run, 60 * 1000); // 启动一分钟后补写漏掉的
+  const timer = setInterval(run, 10 * 60 * 1000);
+  if (first.unref) first.unref();
+  if (timer.unref) timer.unref();
 }
 
 function startReminders(ctx) {
@@ -323,6 +346,7 @@ function main() {
     }
     log.info(`表情包库：${ctx.stickers.count()} 张；看图：${ctx.vision.enabled() ? "开（" + ctx.vision.stats().model + "）" : "关"}；联网搜索：${config.search.enabled ? "开" : "关"}`);
     if (!llm.enabled()) log.warn("还没有可用的大模型，现在只能简单回复。打开网页 →「模型」页添加一个并填 Key");
+    startDiary(ctx); // 日记不靠 QQ，只开网页也写
     if (config.qq.enabled) {
       log.info(`QQ：等待 NapCat 把消息发到 http://${HOST}:${config.port}/onebot；发消息走 ${config.qq.apiBase}`);
       if (!config.owner.qq.length) log.warn("还没设置主人 QQ，建议在网页「设置」里填上");
@@ -351,4 +375,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { build, checkFollowUp, checkGroupDigest, checkReminders, ROOT, HOST };
+module.exports = { build, checkFollowUp, checkGroupDigest, checkReminders, checkDiary, ROOT, HOST };

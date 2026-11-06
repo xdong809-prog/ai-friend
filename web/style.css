@@ -236,3 +236,9 @@ label.inline input[type=time] { width: 112px !important; }
 .usage-table th, .usage-table td { padding: 3px 6px; text-align: right; border-bottom: 1px dashed var(--line); font-weight: normal; }
 .usage-table th { color: var(--muted); }
 .usage-table th:first-child, .usage-table td:first-child { text-align: left; }
+
+/* 日记 */
+.diary-entry { padding: 12px 0; border-bottom: 1px dashed var(--line); }
+.diary-entry:last-child { border-bottom: 0; }
+.diary-entry h4 { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--muted); }
+.diary-entry p { margin: 0; white-space: pre-line; line-height: 1.75; }

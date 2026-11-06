@@ -88,6 +88,11 @@ const DEFAULTS = {
     desktop: true,
     webhook: "",
   },
+  // 它的日记：每晚这个时间以后写当天的（网页「日记」页看）
+  diary: {
+    enabled: true,
+    time: "23:30",
+  },
   // 群聊总结：默认关，主人在网页上自己打开、勾选要总结的群
   groupDigest: {
     enabled: false,
@@ -287,6 +292,10 @@ function normalizeConfig(raw) {
     notify: {
       desktop: bool(c.notify.desktop, true),
       webhook: str(c.notify.webhook, "", 500),
+    },
+    diary: {
+      enabled: bool(c.diary.enabled, true),
+      time: hhmm(c.diary.time, D.diary.time),
     },
     groupDigest: {
       enabled: bool(c.groupDigest.enabled, false),

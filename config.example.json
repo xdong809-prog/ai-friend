@@ -82,6 +82,10 @@
     "desktop": true,
     "webhook": ""
   },
+  "diary": {
+    "enabled": true,
+    "time": "23:30"
+  },
   "groupDigest": {
     "enabled": false,
     "groups": [],

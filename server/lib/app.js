@@ -12,9 +12,10 @@ const { facesToText } = require("./humanize");
 const { FACE_NAMES_FOR_PROMPT } = require("./qqfaces");
 const { PRESETS, presetOf } = require("./presets");
 const { friendlyError } = require("./llm");
+const { ymd } = require("./util");
 const { createBackup, backupFileName, stageRestore, pendingInfo, cancelRestore } = require("./backup");
 
-const VERSION = "4.9.0";
+const VERSION = "4.10.0";
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -27,7 +28,7 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
-function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, dataDir = path.join(root, "data"), personas = null, reminders = null, links = null, usage = null, now = Date.now }) {
+function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vision = null, stickers = null, search = null, compressJob = null, digest = null, dataDir = path.join(root, "data"), personas = null, reminders = null, links = null, usage = null, diary = null, now = Date.now }) {
   const webDir = path.join(root, "web");
   let server;
   const guard = createLocalGuard({
@@ -241,6 +242,13 @@ function createApp({ root, config, log, memory, brain, llm, onebot, watchdog, vi
       return { ok: personas.remove(b.id) };
     },
     "GET /api/usage": async () => ({ ok: true, ...usage.summary() }),
+    // 日记和时间线
+    "GET /api/diary": async () => ({ ok: true, enabled: config.diary.enabled, list: diary.list(60), timeline: diary.timeline(brain.getState("main")), job: diary.status() }),
+    "POST /api/diary/write": async () => {
+      if (!llm.enabled("memory")) return { status: 400, body: { ok: false, error: "还没有可用的大模型，日记要靠大模型来写" } };
+      const { already } = diary.start([ymd(now())], { force: true });
+      return { ok: true, already, job: diary.status() };
+    },
     // 备份：下载走 handle() 里的特殊分支（要返回文件）；恢复先放好，重启才生效
     "GET /api/backup/status": async () => ({ ok: true, pending: pendingInfo(dataDir) }),
     "POST /api/backup/restore": async (req) => {

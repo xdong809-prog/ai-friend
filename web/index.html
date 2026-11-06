@@ -19,6 +19,7 @@
       <nav class="tabs" role="tablist">
         <button class="tab active" data-tab="chat">聊天</button>
         <button class="tab" data-tab="memory">记忆</button>
+        <button class="tab" data-tab="diary">日记</button>
         <button class="tab" data-tab="groups">群聊</button>
         <button class="tab" data-tab="personas">角色</button>
         <button class="tab" data-tab="models">模型</button>
@@ -142,6 +143,24 @@
           <div class="card-head"><h3>聊天记录</h3><span class="muted" id="historyInfo"></span></div>
           <p class="muted">清空只会把记录文件改名备份（data/sessions/ 里的 .bak 文件），记忆档案不受影响。</p>
           <div class="row end"><button class="warn" id="clearBtn" type="button">清空聊天记录</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 日记 -->
+    <section class="panel" id="panel-diary">
+      <div class="scroll">
+        <p class="hint">它每晚会把今天和你聊的事写成一篇短日记，只在这里看得到，不会发给你。</p>
+        <div class="card">
+          <div class="stats" id="diaryStats"></div>
+          <div class="card-head"><h3>接下来的日子</h3><span class="muted">到了那天它会记得</span></div>
+          <ul class="kv" id="milestones"></ul>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>日记</h3><span class="muted" id="diaryInfo"></span></div>
+          <p class="muted pre" id="diaryMsg"></p>
+          <div class="row end"><button type="button" id="diaryWrite">现在写今天的</button></div>
+          <div id="diaryList"></div>
         </div>
       </div>
     </section>
@@ -339,6 +358,8 @@
           <label class="check"><input type="checkbox" name="proactive.followUp">记着我的安排主动关心（比如面试前一晚说加油、第二天问结果）</label>
           <label class="check"><input type="checkbox" name="proactive.enabled">偶尔主动找我聊天（QQ，白天，很久没聊时）</label>
           <label>多久没聊才主动找（小时）<input name="proactive.quietHours" type="number" min="2" max="240"></label>
+          <label class="check"><input type="checkbox" name="diary.enabled">每晚写日记（网页「日记」页能看）</label>
+          <label>几点以后写当天的日记<input name="diary.time" type="time"></label>
         </div>
 
         <div class="card">

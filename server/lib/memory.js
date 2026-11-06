@@ -97,7 +97,7 @@ function createMemory({ dataDir, config, log, now = Date.now, namesFor = () => n
         /* 跳过坏行 */
       }
     }
-    const entry = { list: list.slice(-MAX_CACHE), lastSeq: seq, total: list.length };
+    const entry = { list: list.slice(-MAX_CACHE), lastSeq: seq, total: list.length, firstTs: list.length ? list[0].ts : 0 };
     cache.set(id, entry);
     return entry;
   }
@@ -110,6 +110,7 @@ function createMemory({ dataDir, config, log, now = Date.now, namesFor = () => n
     if (mood) msg.mood = String(mood).slice(0, 6);
     entry.lastSeq = msg.seq;
     entry.total++;
+    if (!entry.firstTs) entry.firstTs = msg.ts;
     entry.list.push(msg);
     if (entry.list.length > MAX_CACHE) entry.list.splice(0, entry.list.length - MAX_CACHE);
     ensureDir(sessDir);
@@ -845,6 +846,8 @@ ${formatForLLM(slice, friend.name, userCall)}
     ruleExtract,
     listSessions,
     lastSeq: (id) => load(id).lastSeq,
+    /** 聊天记录里第一条消息的时间（压缩归档后会变晚；要稳定的值看 brain 状态里的 firstAt） */
+    firstTs: (id) => load(id).firstTs,
   };
 }
 
